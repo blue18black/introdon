@@ -3,7 +3,6 @@ const YTPlayers = (() => {
   let apiReadyPromise = null;
   const pool = []; // YT.Player instances
   const activeCancel = []; // pool[i]に対応する、進行中のplayOne()を打ち切る関数(なければnull)
-  const precuedState = []; // pool[i]が現在precue済みの{videoId,startSeconds}(なければnull)
   let nextPlayerIndex = 0;
 
   function loadApi() {
@@ -73,15 +72,6 @@ const YTPlayers = (() => {
       let retried = false;
       let timeoutId = null;
 
-      // 事前にprecue(cueVideoById)済みの動画・開始位置と完全に一致する場合だけ、
-      // loadVideoByIdを二重に呼ばずplayVideo()で再生を始める。loadVideoByIdを
-      // 再度呼ぶと、既に一部バッファ済みの状態と噛み合わず、一瞬PLAYINGになった
-      // 直後に再バッファリングして数秒無音になる不具合があった(precue後の
-      // 一回目の再生でだけ再現する)。一度使ったら消費済みにする。
-      const cued = precuedState[playerIndex];
-      const alreadyCued = !!cued && cued.videoId === videoId && cued.startSeconds === startSeconds;
-      precuedState[playerIndex] = null;
-
       // playSecondsの計測は「実際に音が鳴り始めた瞬間」を起点にする。loadVideoById()
       // 呼び出し直後ではバッファリング等で数百ms~数秒のずれが出て、画面のカウントダウン
       // と体感の再生タイミングが合わなくなるため。
@@ -124,13 +114,9 @@ const YTPlayers = (() => {
       };
       activeCancel[playerIndex] = cancel;
 
-      const load = (useCue) => {
+      const load = () => {
         try {
-          if (useCue) {
-            player.playVideo();
-          } else {
-            player.loadVideoById({ videoId, startSeconds });
-          }
+          player.loadVideoById({ videoId, startSeconds });
         } catch (e) {
           settled = true;
           cleanup();
@@ -140,7 +126,7 @@ const YTPlayers = (() => {
 
       player.addEventListener("onStateChange", onStateChange);
       player.addEventListener("onError", onError);
-      load(alreadyCued);
+      load();
 
       // 生成直後のプレーヤーは(特にセッション最初の数曲)YouTube側の初期化待ちで
       // PLAYINGイベントが来ないまま無音で止まっていることがある。少し待っても
@@ -155,7 +141,7 @@ const YTPlayers = (() => {
         try { state = player.getPlayerState(); } catch (e) { /* noop */ }
         if (state === YT.PlayerState.BUFFERING || state === YT.PlayerState.PLAYING) return;
         retried = true;
-        load(false); // 再試行は素直にloadVideoByIdで読み込み直す
+        load();
       }, 3000);
 
       // それでも反応がなければ、再生開始とみなして先へ進む(保険)。
@@ -192,16 +178,14 @@ const YTPlayers = (() => {
       return Promise.all(tasks);
     },
 
-    // 指定したプレーヤー番号に、再生はせず動画だけ裏側で読み込んでおく
-    // (次の問題の曲を先読みし、実際に切り替わった時の再生開始を早める用途)。
-    async precue(playerIndex, videoId, startSeconds) {
-      const players = await ensurePool(playerIndex + 1);
-      try {
-        players[playerIndex].cueVideoById({ videoId, startSeconds });
-        precuedState[playerIndex] = { videoId, startSeconds };
-      } catch (e) {
-        precuedState[playerIndex] = null;
-      }
+    // 以前はcueVideoById()で次の曲を裏側に読み込んでおき、実際の再生時に
+    // loadVideoByIdを呼び直していたが、precue済みの動画に対してもう一度
+    // loadVideoByIdを呼ぶと状態が噛み合わず、数秒無音になったり最悪
+    // 音が鳴らなくなったりする不具合につながった。安定して確実に音が鳴る
+    // ことを優先し、先読み自体を無効化している(呼び出し側の互換のため
+    // 関数自体は残す)。
+    async precue() {
+      // 意図的に何もしない。
     },
 
     stopAll() {
@@ -215,7 +199,6 @@ const YTPlayers = (() => {
     destroyAll() {
       activeCancel.forEach((cancel) => { if (cancel) cancel(); });
       activeCancel.length = 0;
-      precuedState.length = 0;
       pool.forEach((p) => {
         try { p.destroy(); } catch (e) { /* noop */ }
       });

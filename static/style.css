@@ -306,26 +306,32 @@ input {
 }
 .artist-entry-preview.is-open { display: block; }
 
-/* 取得中は、このアーティストの行だけにステータスを重ねて表示する。 */
+/* 取得中は、このアーティストの行だけにステータスを重ねて表示する。
+   中断ボタンはバーの一番右に置く。 */
 .artist-entry-loading {
   position: absolute;
   inset: 0;
   z-index: 10;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  text-align: center;
-  padding: 4px 8px;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 4px 12px;
   background: rgba(245, 245, 247, 0.94);
   border-radius: 10px;
   font-size: 0.72rem;
   font-weight: 700;
   color: var(--ink);
 }
+.artist-entry-loading-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+}
 .artist-entry-loading-cancel {
-  padding: 3px 12px;
+  flex: 0 0 auto;
+  padding: 5px 12px;
   border-radius: 999px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -584,6 +590,14 @@ input {
   font-weight: 800;
   font-size: 0.82rem;
   box-shadow: 0 6px 16px rgba(28, 27, 41, 0.18);
+}
+/* 実際に音が鳴り始めるまでの間、数字も文字も出さないと「固まっている」ように
+   見えて不安になるため、文言(読み込み中/待機中)は出さずに「•」を軽く
+   脈動させて、動いている(進行中である)ことだけ伝える。 */
+.countdown.is-waiting { animation: countdown-pulse 0.9s ease-in-out infinite; }
+@keyframes countdown-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.88); }
+  50% { opacity: 1; transform: scale(1.05); }
 }
 .stage-caption {
   font-weight: 600;
