@@ -659,8 +659,10 @@
     updateStartButtonState();
   }
 
-  // 「読み込みが多すぎてしらける」を避けるため、プレーヤーの準備はゲーム画面に
-  // 切り替える前(ホーム画面/リザルト画面にいる間)に済ませておく。
+  // 「読み込みが多すぎてしらける」を避けるため、プレーヤーの準備と最初の曲の
+  // 先読みはゲーム画面に切り替える前(ホーム画面/リザルト画面にいる間)に
+  // 済ませておく。1問目→2問目の切り替えでもラグが出ないよう、2問目分もここで
+  // 先読みしておく(3問目以降は毎問、答え合わせ中に次を先読みする)。
   async function startGame(triggerBtn) {
     const originalLabel = triggerBtn.textContent;
     triggerBtn.disabled = true;
@@ -672,8 +674,14 @@
       numQuestions: State.numQuestions,
       seconds: State.seconds,
     });
+    loadCurrentQuestionPlan();
     try {
       await YTPlayers.prepare(2);
+      await YTPlayers.precue(0, currentPlaybackPlan.videoIds[0], currentPlaybackPlan.startSecondsList[0]);
+      if (State.session.questions.length > 1) {
+        const secondTrack = State.session.questions[1].tracks[0];
+        await YTPlayers.precue(1, secondTrack.videoId, 0);
+      }
     } catch (e) { /* noop: 失敗しても通常のplayCurrentClip側の読み込みに任せる */ }
     triggerBtn.disabled = false;
     triggerBtn.textContent = originalLabel;
@@ -706,7 +714,9 @@
   let playbackBusy = false;
   let selectedChoiceIndex = -1; // 十字キーでの選択位置
   let introSkipOffset = 0; // 「続きから再生」で加算される開始位置のオフセット(秒)
-  // 2つのプレーヤーを交互に使う(前の問題のプレーヤーの後片付けと重ならないように)。
+  // 2つのプレーヤーを交互に使う。片方で今の問題を再生している間、もう片方に
+  // 次の問題の曲を裏側で読み込んでおく(precue)ことで、実際に切り替わった時の
+  // 読み込み開始を早める。
   let activeSlot = 0;
 
   function loadCurrentQuestionPlan() {
@@ -804,8 +814,25 @@
       playbackBusy = false;
       if (isFirstPlay) {
         openAnswerArea();
+        precueNextQuestion();
       }
     });
+  }
+
+  // 次の問題の曲を、今使っていない方のプレーヤーへ裏側で読み込んでおく
+  // (再生のトリガーは常にplayCurrentClip側のloadVideoByIdのままで、ここでは
+  // 事前のヒントとしてcueVideoById()するだけ)。失敗しても実害はないので
+  // 念のためtry/catchで無視する。
+  function precueNextQuestion() {
+    const session = State.session;
+    if (!session || session.isLastQuestion) return;
+    const nextQuestion = session.questions[session.currentIndex + 1];
+    if (!nextQuestion) return;
+    const track = nextQuestion.tracks[0];
+    if (!track) return;
+    try {
+      YTPlayers.precue(1 - activeSlot, track.videoId, 0);
+    } catch (e) { /* noop */ }
   }
 
   function flashPressed(btn) {
@@ -933,7 +960,7 @@
       showResult(session);
     } else {
       session.advance();
-      activeSlot = 1 - activeSlot; // 前の問題で使っていたプレーヤーの後片付けと重ならないよう交互に使う
+      activeSlot = 1 - activeSlot; // precueNextQuestion()で先読みしておいた側に切り替える
       renderQuestion();
     }
   });

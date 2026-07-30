@@ -210,14 +210,17 @@ const YTPlayers = (() => {
       return Promise.all(tasks);
     },
 
-    // 以前はcueVideoById()で次の曲を裏側に読み込んでおき、実際の再生時に
-    // loadVideoByIdを呼び直していたが、precue済みの動画に対してもう一度
-    // loadVideoByIdを呼ぶと状態が噛み合わず、数秒無音になったり最悪
-    // 音が鳴らなくなったりする不具合につながった。安定して確実に音が鳴る
-    // ことを優先し、先読み自体を無効化している(呼び出し側の互換のため
-    // 関数自体は残す)。
-    async precue() {
-      // 意図的に何もしない。
+    // 指定したプレーヤー番号に、再生はせず動画だけ裏側で読み込んでおく
+    // (次の問題の曲を先読みし、実際に切り替わった時の読み込み開始を早める用途)。
+    // 以前はこの後の実際の再生時にplayVideo()へ切り替えて二重読み込みを避けようと
+    // したが、それが原因で再生できなくなる不具合が起きた。今回は実際の再生トリガー
+    // は常にloadVideoById(playOne側は変更なし)のままにし、cueVideoById()は
+    // あくまで事前のヒントとしてのみ使う(失敗しても実害がないようtry/catchで無視)。
+    async precue(playerIndex, videoId, startSeconds) {
+      const players = await ensurePool(playerIndex + 1);
+      try {
+        players[playerIndex].cueVideoById({ videoId, startSeconds });
+      } catch (e) { /* noop */ }
     },
 
     stopAll() {
