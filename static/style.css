@@ -538,7 +538,7 @@ input {
 
 .player-visual {
   width: min(120px, 30vw);
-  height: min(120px, 30vw);
+  aspect-ratio: 1 / 1;
   border-radius: 50%;
   background: var(--ink);
   box-shadow: 0 20px 40px rgba(28, 27, 41, 0.25);
@@ -546,6 +546,7 @@ input {
   align-items: center;
   justify-content: center;
   position: relative;
+  flex-shrink: 0;
 }
 
 .eq-bars {
@@ -710,6 +711,15 @@ input {
 }
 .btn-next:active { transform: translateY(1px); box-shadow: 0 3px 8px rgba(28, 27, 41, 0.16); }
 .btn-next:disabled { opacity: 0.35; box-shadow: none; pointer-events: none; }
+/* 解答前は「次へ」ボタンのぶんのスペースを空けておかず、出現した瞬間に
+   ページ全体の高さが増えてスクロールが必要になっていた。表示/非表示を
+   display:noneではなくvisibilityで切り替え、常に同じ高さを確保しておく
+   ことで、出現してもレイアウトの高さが変わらないようにする。 */
+#answer-next.hidden {
+  display: block !important;
+  visibility: hidden;
+  pointer-events: none;
+}
 
 /* ---------- リザルト画面 ---------- */
 
