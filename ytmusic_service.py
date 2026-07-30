@@ -247,34 +247,6 @@ def _filter_embeddable(tracks):
     return [t for t, ok in zip(tracks, results) if ok]
 
 
-def get_trending_tracks(country="JP"):
-    charts = _yt.get_charts(country)
-    videos = charts.get("videos") or []
-    playlist_id = None
-    # "Daily Top Music Videos"系の標準プレイリストIDを優先する
-    # (先頭の"Trending"はOLAK5uy形式のアルバム由来IDでget_playlistとの相性が悪いことがあるため)
-    for v in videos:
-        pid = v.get("playlistId", "")
-        if pid.startswith("PL"):
-            playlist_id = pid
-            break
-    if not playlist_id and videos:
-        playlist_id = videos[0].get("playlistId")
-    if not playlist_id:
-        raise RuntimeError(f"'{country}'のトレンドプレイリストが見つかりませんでした。")
-
-    playlist = _yt.get_playlist(playlist_id, limit=100)
-    raw_tracks = playlist.get("tracks") or []
-    raw_tracks = _clean_and_dedupe(raw_tracks)
-
-    tracks = []
-    for raw in raw_tracks:
-        qt = _to_quiz_track(raw)
-        if qt:
-            tracks.append(qt)
-    return _filter_embeddable(tracks)
-
-
 _PLAYLIST_ID_RE = re.compile(r"[?&]list=([\w-]+)")
 
 

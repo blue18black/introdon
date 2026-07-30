@@ -179,8 +179,6 @@ input {
 
 .hint { margin: 0 0 6px; font-size: 0.76rem; opacity: 0.55; }
 
-.trending-confirm-wrap { position: relative; margin-top: 6px; }
-
 .pool-status {
   font-weight: 700;
   font-size: 0.8rem;
@@ -282,15 +280,19 @@ input {
   white-space: nowrap;
 }
 
-/* 「確認」ボタンを押すと、取得できた曲の一覧をプレビュー表示する。 */
+/* 「確認」ボタンを押すと、取得できた曲の一覧をプレビュー表示する。
+   位置の基準は各行全体(.artist-entry / .saved-item)にし、left:0/right:0で
+   その行の横幅いっぱいに広げる。以前は行の中の狭い要素(アーティスト名部分など)
+   を基準にright:0していたため、スマホ幅では横に長いプレビューが画面外へ
+   はみ出してしまっていた。 */
 .artist-entry-preview {
   display: none;
   position: absolute;
   top: 100%;
+  left: 0;
   right: 0;
   z-index: 20;
   margin-top: 6px;
-  width: max(220px, 100%);
   max-height: 220px;
   overflow-y: auto;
   background: var(--surface);
@@ -571,6 +573,14 @@ input {
   font-size: 0.82rem;
   box-shadow: 0 6px 16px rgba(28, 27, 41, 0.18);
 }
+/* 実際に音が鳴り始めるまでの待ち時間、数字が出ずに静止したままだと
+   固まって見えて「しらける」ため、読み込み中であることが伝わるよう
+   軽く脈動させておく。 */
+.countdown.is-waiting { animation: countdown-pulse 0.9s ease-in-out infinite; }
+@keyframes countdown-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.88); }
+  50% { opacity: 1; transform: scale(1.05); }
+}
 
 .stage-caption {
   font-weight: 600;
@@ -646,9 +656,17 @@ input {
   color: var(--ink);
   font-weight: 700;
   font-size: 0.84rem;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
 }
 .btn-replay:active { transform: translateY(1px); }
-.btn-replay:disabled { opacity: 0.4; }
+/* タップした瞬間にはっきり色が変わることで「押した」ことがわかるようにする。
+   JS側でクリック直後に一瞬付与し、その後すぐdisabled状態に切り替わる。 */
+.btn-replay.is-pressed {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.btn-replay:disabled { opacity: 0.4; pointer-events: none; }
 
 .btn-next {
   flex: 1 1 auto;
@@ -660,8 +678,10 @@ input {
   font-size: 1rem;
   letter-spacing: 0.02em;
   box-shadow: 0 8px 20px rgba(28, 27, 41, 0.18);
+  transition: opacity 0.12s ease;
 }
 .btn-next:active { transform: translateY(1px); box-shadow: 0 3px 8px rgba(28, 27, 41, 0.16); }
+.btn-next:disabled { opacity: 0.35; box-shadow: none; pointer-events: none; }
 
 /* ---------- リザルト画面 ---------- */
 

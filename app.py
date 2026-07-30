@@ -19,16 +19,6 @@ def index():
     return send_from_directory(".", "index.html")
 
 
-@app.route("/api/trending")
-def api_trending():
-    country = request.args.get("country", "JP")
-    try:
-        tracks = ytmusic_service.get_trending_tracks(country)
-        return jsonify({"tracks": tracks})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/artist_suggest")
 def api_artist_suggest():
     query = request.args.get("q", "").strip()

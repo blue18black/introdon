@@ -19,11 +19,6 @@ const Api = {
     return data;
   },
 
-  async getTrendingTracks(country = "JP") {
-    const data = await this._get(`/api/trending?country=${encodeURIComponent(country)}`);
-    return data.tracks;
-  },
-
   // サジェストは検索中止(AbortController)や「見つかりませんでした」を呼び出し側で
   // 扱いたいので、共通の_get()は使わずエラー時は空配列を返す。
   async suggestArtist(query, signal) {

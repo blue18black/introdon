@@ -4,9 +4,8 @@
   const MODE = "intro";
 
   const State = {
-    source: "trending",
+    source: "artist",
     pool: null,
-    trendingPoolCache: null,
     selectedArtists: [], // 複数指定できるアーティスト名のリスト
     artistPool: null, // 選択中の全アーティストをマージした曲プール
     artistTrackCache: {}, // `${name}::${scope}` -> {artistName, tracks}
@@ -32,10 +31,6 @@
 
   // ---------------- ホーム画面(イントロドン設定) ----------------
 
-  if (State.source === "trending") {
-    loadTrendingPool();
-  }
-
   $("source-tabs").addEventListener("click", (e) => {
     const tab = e.target.closest(".tab");
     if (!tab) return;
@@ -47,9 +42,7 @@
     // 保存済みタブでは「この曲リストを保存」は不要(保存済みのものを保存し直すだけになるため)。
     $("save-dataset-row").classList.toggle("hidden", State.source === "saved");
 
-    if (State.source === "trending") {
-      loadTrendingPool();
-    } else if (State.source === "artist") {
+    if (State.source === "artist") {
       State.pool = State.artistPool;
       updateStartButtonState();
     } else if (State.source === "playlist") {
@@ -60,61 +53,6 @@
       State.pool = State.savedPool;
       updateStartButtonState();
     }
-  });
-
-  async function loadTrendingPool() {
-    const statusEl = $("trending-status");
-    if (State.trendingPoolCache) {
-      State.pool = State.trendingPoolCache;
-      statusEl.textContent = `${State.pool.length}曲 取得済み`;
-      statusEl.classList.remove("is-error");
-      updateStartButtonState();
-      renderTrendingConfirm();
-      return;
-    }
-    statusEl.textContent = "読み込み中...";
-    statusEl.classList.remove("is-error");
-    try {
-      const tracks = await Api.getTrendingTracks("JP");
-      State.trendingPoolCache = tracks;
-      State.pool = tracks;
-      statusEl.textContent = `${tracks.length}曲 取得しました`;
-    } catch (err) {
-      statusEl.textContent = `取得に失敗しました: ${err.message}`;
-      statusEl.classList.add("is-error");
-    }
-    updateStartButtonState();
-    renderTrendingConfirm();
-  }
-
-  // 流行タブでも、取得できた曲を確認ボタンでプレビューできるようにする。
-  let trendingPreviewOpen = false;
-
-  function renderTrendingConfirm() {
-    const btn = $("trending-confirm-btn");
-    const preview = $("trending-preview");
-    if (!State.trendingPoolCache || State.trendingPoolCache.length === 0) {
-      btn.classList.add("hidden");
-      preview.classList.remove("is-open");
-      preview.innerHTML = "";
-      return;
-    }
-    btn.classList.remove("hidden");
-    preview.classList.toggle("is-open", trendingPreviewOpen);
-    if (trendingPreviewOpen) {
-      const items = State.trendingPoolCache
-        .map((t) => `<li>${escapeHtml(t.title)} - ${escapeHtml(t.artist)}</li>`)
-        .join("");
-      preview.innerHTML = `<strong>${State.trendingPoolCache.length}曲取得済み</strong><ul>${items}</ul>`;
-    } else {
-      preview.innerHTML = "";
-    }
-  }
-
-  $("trending-confirm-btn").addEventListener("click", (e) => {
-    e.stopPropagation();
-    trendingPreviewOpen = !trendingPreviewOpen;
-    renderTrendingConfirm();
   });
 
   // ---- プレイリストのURL指定 ----
@@ -340,10 +278,6 @@
       openSavedPreviewId = null;
       renderSavedDatasetsList();
     }
-    if (trendingPreviewOpen) {
-      trendingPreviewOpen = false;
-      renderTrendingConfirm();
-    }
   });
 
   function renderArtistEntries() {
@@ -374,13 +308,15 @@
       // (ホバーだとPC以外で使えないため、タップでも開閉できるボタン方式にする)。
       const cached = State.artistTrackCache[`${entry.name}::${entry.scope}`];
       let confirmBtn = null;
+      let preview = null;
       if (cached && cached.tracks && cached.tracks.length > 0) {
-        const preview = document.createElement("div");
+        preview = document.createElement("div");
+        // 位置の基準は行全体(li.artist-entry)にする。アーティスト名部分(nameEl)は
+        // 横幅が狭いため、そこを基準にするとプレビューが画面外へはみ出していた。
         preview.className = "artist-entry-preview";
         if (openPreviewName === entry.name) preview.classList.add("is-open");
         const items = cached.tracks.map((t) => `<li>${escapeHtml(t.title)}</li>`).join("");
         preview.innerHTML = `<strong>${cached.tracks.length}曲取得済み</strong><ul>${items}</ul>`;
-        nameEl.appendChild(preview);
 
         confirmBtn = document.createElement("button");
         confirmBtn.type = "button";
@@ -423,6 +359,7 @@
       if (confirmBtn) li.appendChild(confirmBtn);
       li.appendChild(scopeRow);
       li.appendChild(removeBtn);
+      if (preview) li.appendChild(preview);
       wrap.appendChild(li);
     });
   }
@@ -556,7 +493,6 @@
   }
 
   function suggestDatasetLabel() {
-    if (State.source === "trending") return `最近はやりの曲(${State.pool.length}曲)`;
     if (State.source === "artist") {
       return State.selectedArtists.map((a) => `${a.name}(${SCOPE_LABEL[a.scope]})`).join("+");
     }
@@ -618,6 +554,8 @@
       main.addEventListener("click", () => selectSavedDataset(ds));
 
       // 保存済みの曲リストも、確認ボタンで中身の曲一覧をプレビューできるようにする。
+      // 位置の基準は行全体(li.saved-item)にする(confirmWrapは横幅が狭く、
+      // そこを基準にするとプレビューが画面外へはみ出すことがあるため)。
       const confirmWrap = document.createElement("div");
       confirmWrap.className = "saved-item-confirm-wrap";
 
@@ -626,7 +564,6 @@
       if (openSavedPreviewId === ds.id) preview.classList.add("is-open");
       const items = ds.tracks.map((t) => `<li>${escapeHtml(t.title)}</li>`).join("");
       preview.innerHTML = `<strong>${ds.tracks.length}曲</strong><ul>${items}</ul>`;
-      confirmWrap.appendChild(preview);
 
       const confirmBtn = document.createElement("button");
       confirmBtn.type = "button";
@@ -651,6 +588,7 @@
       li.appendChild(main);
       li.appendChild(confirmWrap);
       li.appendChild(removeBtn);
+      li.appendChild(preview);
       ul.appendChild(li);
     });
   }
@@ -679,8 +617,10 @@
 
   $("setup-start").addEventListener("click", () => {
     // 「スタート!」のクリック(ユーザー操作)直後からプレーヤー生成を始めておくと、
-    // 最初の曲の再生開始が遅れる/反応しない事象が減る。
-    YTPlayers.prepare(1);
+    // 最初の曲の再生開始が遅れる/反応しない事象が減る。2つ用意しておき、
+    // 次の問題の曲を裏側で先読み(precue)できるようにする(体感の再生開始を早める)。
+    YTPlayers.prepare(2);
+    activeSlot = 0;
     State.session = Quiz.createSession({
       mode: MODE,
       pool: State.pool,
@@ -704,6 +644,7 @@
     YTPlayers.destroyAll();
     State.session = null;
     currentPlaybackPlan = null;
+    activeSlot = 0;
     showScreen("screen-home");
   }
 
@@ -713,6 +654,10 @@
   let playbackBusy = false;
   let selectedChoiceIndex = -1; // 十字キーでの選択位置
   let introSkipOffset = 0; // 「続きから再生」で加算される開始位置のオフセット(秒)
+  // 2つのプレーヤーを交互に使う。片方で今の問題を再生している間、もう片方に
+  // 次の問題の曲を裏側で読み込んでおく(precue)ことで、実際に切り替わった時の
+  // 再生開始までの待ち時間を短くする。
+  let activeSlot = 0;
 
   function loadCurrentQuestionPlan() {
     const session = State.session;
@@ -769,20 +714,25 @@
     // 再生開始までは数字を出さず、実際に音が鳴り始めた瞬間にカウントダウンを
     // 起動する(YTPlayersのonStartコールバック)。ここで先に数字を出してしまうと、
     // 本当に鳴り始めた瞬間が視覚的にわかりにくくなり、体感のズレにつながる。
-    $("game-countdown").textContent = "•";
+    // 待っている間は静止させず、軽く脈動させて「固まっている」ように見えるのを防ぐ。
+    const countdownEl = $("game-countdown");
+    countdownEl.textContent = "•";
+    countdownEl.classList.add("is-waiting");
 
     YTPlayers.playSegments(videoIds, startSecondsList, playSeconds, () => {
       visual.classList.remove("is-idle");
+      countdownEl.classList.remove("is-waiting");
       startCountdown(playSeconds);
-    }).then((results) => {
+    }, activeSlot).then((results) => {
       stopCountdown();
+      countdownEl.classList.remove("is-waiting");
       visual.classList.add("is-idle");
       const anyError = results.some((r) => r.error);
+      if (anyError) videoIds.forEach((id) => State.brokenVideoIds.add(id));
 
       // 最初の再生に失敗した曲は、エラー表示はせず別の曲へ静かに差し替えて
       // 出題し直す(ユーザーには再生できない曲があったことを見せない)。
       if (anyError && isFirstPlay) {
-        videoIds.forEach((id) => State.brokenVideoIds.add(id));
         playbackBusy = false;
         if (retriesLeft > 0 && State.session.replaceCurrentTrack([...State.brokenVideoIds])) {
           introSkipOffset = 0; // 別の曲に差し替わったので、開始位置のずらしもリセットする
@@ -793,22 +743,54 @@
         // 差し替え候補が尽きた場合のみ、やむを得ずこの曲のまま進める。
       }
 
-      $("game-caption").textContent = captionText(false);
+      // 差し替えず(または差し替え候補が尽きて)そのまま進めることになった場合は、
+      // 無言で「再生中」表示のまま終わらせず、再生できなかったことがわかるようにする。
+      $("game-caption").textContent = anyError
+        ? "再生できませんでした。もう一度再生をお試しください"
+        : captionText(false);
       replayBtn.disabled = false;
       skipBtn.disabled = false;
       nextBtn.disabled = false;
       playbackBusy = false;
-      if (isFirstPlay) openAnswerArea();
+      if (isFirstPlay) {
+        openAnswerArea();
+        precueNextQuestion();
+      }
     });
   }
 
-  $("replay-btn").addEventListener("click", () => playCurrentClip());
+  // 次の問題の曲を、今使っていない方のプレーヤーへ裏側で読み込んでおく
+  // (再生はしない)。「次へ」で問題が切り替わった時、既に読み込み済みの分だけ
+  // 実際の再生開始が早くなる。読み込みに失敗しても実害はない(通常の
+  // loadVideoByIdに任せるだけなので)、念のためtry/catchで無視する。
+  function precueNextQuestion() {
+    const session = State.session;
+    if (!session || session.isLastQuestion) return;
+    const nextQuestion = session.questions[session.currentIndex + 1];
+    if (!nextQuestion) return;
+    const track = nextQuestion.tracks[0];
+    if (!track) return;
+    try {
+      YTPlayers.precue(1 - activeSlot, track.videoId, 0);
+    } catch (e) { /* noop */ }
+  }
+
+  function flashPressed(btn) {
+    btn.classList.add("is-pressed");
+    setTimeout(() => btn.classList.remove("is-pressed"), 200);
+  }
+
+  $("replay-btn").addEventListener("click", (e) => {
+    flashPressed(e.currentTarget);
+    playCurrentClip();
+  });
 
   // イントロが無音だった場合に、直前に流した秒数分だけ開始位置を進めて再生し
   // 直せるようにする(実際の音量を検知しての自動スキップはIFrame埋め込みの仕組み上
   // できないため、手動でずらせるようにする代替策)。飛び飛びにならず曲の頭から
   // 順番に聞いていけるよう、ずらす量は「今まで流した秒数分」ちょうどにする。
-  $("skip-ahead-btn").addEventListener("click", () => {
+  $("skip-ahead-btn").addEventListener("click", (e) => {
+    flashPressed(e.currentTarget);
     introSkipOffset += currentPlaybackPlan.playSeconds;
     loadCurrentQuestionPlan();
     playCurrentClip();
@@ -918,6 +900,7 @@
       showResult(session);
     } else {
       session.advance();
+      activeSlot = 1 - activeSlot; // precueNextQuestion()で先読みしておいた側に切り替える
       renderQuestion();
     }
   });

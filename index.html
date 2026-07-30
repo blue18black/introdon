@@ -25,22 +25,12 @@
       <div class="setup-group">
         <div class="setup-label">曲のソース</div>
         <div class="tabs" id="source-tabs">
-          <button class="tab is-active" data-source="trending">流行</button>
-          <button class="tab" data-source="artist">アーティスト</button>
+          <button class="tab is-active" data-source="artist">アーティスト</button>
           <button class="tab" data-source="playlist">プレイリスト</button>
           <button class="tab" data-source="saved">保存済み</button>
         </div>
 
-        <div id="source-trending" class="source-pane is-active">
-          <p class="hint">急上昇ランキングから出題します。</p>
-          <div class="pool-status" id="trending-status">読み込み中...</div>
-          <div class="trending-confirm-wrap">
-            <button id="trending-confirm-btn" class="artist-entry-confirm hidden" type="button">確認</button>
-            <div class="artist-entry-preview" id="trending-preview"></div>
-          </div>
-        </div>
-
-        <div id="source-artist" class="source-pane">
+        <div id="source-artist" class="source-pane is-active">
           <div class="artist-input-wrap">
             <input id="artist-input" type="text" placeholder="アーティスト名を入力(複数指定可)" autocomplete="off">
             <button id="artist-clear-btn" class="artist-clear-btn hidden" type="button">×</button>

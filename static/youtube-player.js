@@ -161,18 +161,30 @@ const YTPlayers = (() => {
 
     // videoIds: string[], startSecondsList: number[] (同じ長さ), playSeconds: number
     // onStart: 最初の1曲が実際に再生開始した瞬間に一度だけ呼ばれる(カウントダウン表示の起点用)
+    // startPlayerIndex: 使うプレーヤーの開始番号(次の問題の先読み用に2台を交互に使うため)
     // 戻り値: [{error:boolean}, ...] videoIdsと同じ順
-    async playSegments(videoIds, startSecondsList, playSeconds, onStart) {
-      const players = await ensurePool(videoIds.length);
+    async playSegments(videoIds, startSecondsList, playSeconds, onStart, startPlayerIndex = 0) {
+      const players = await ensurePool(startPlayerIndex + videoIds.length);
       let started = false;
       const handleStart = () => {
         if (started) return;
         started = true;
         if (onStart) onStart();
       };
-      const tasks = videoIds.map((vid, i) =>
-        playOne(i, players[i], vid, startSecondsList[i], playSeconds, handleStart));
+      const tasks = videoIds.map((vid, i) => {
+        const idx = startPlayerIndex + i;
+        return playOne(idx, players[idx], vid, startSecondsList[i], playSeconds, handleStart);
+      });
       return Promise.all(tasks);
+    },
+
+    // 指定したプレーヤー番号に、再生はせず動画だけ裏側で読み込んでおく
+    // (次の問題の曲を先読みし、実際に切り替わった時の再生開始を早める用途)。
+    async precue(playerIndex, videoId, startSeconds) {
+      const players = await ensurePool(playerIndex + 1);
+      try {
+        players[playerIndex].cueVideoById({ videoId, startSeconds });
+      } catch (e) { /* noop */ }
     },
 
     stopAll() {
