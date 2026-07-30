@@ -615,11 +615,14 @@
     updateStartButtonState();
   }
 
-  $("setup-start").addEventListener("click", () => {
-    // 「スタート!」のクリック(ユーザー操作)直後からプレーヤー生成を始めておくと、
-    // 最初の曲の再生開始が遅れる/反応しない事象が減る。2つ用意しておき、
-    // 次の問題の曲を裏側で先読み(precue)できるようにする(体感の再生開始を早める)。
-    YTPlayers.prepare(2);
+  // 「読み込みが多すぎてしらける」を避けるため、プレーヤーの準備と最初の曲の
+  // 先読みはゲーム画面に切り替える前(ホーム画面にいる間)に済ませておく。
+  // これによりゲーム画面側には「読み込み中」のような表示は一切出さず、
+  // 画面が切り替わった時点でほぼ即座に再生を始められる。
+  $("setup-start").addEventListener("click", async () => {
+    const startBtn = $("setup-start");
+    startBtn.disabled = true;
+    startBtn.textContent = "準備中...";
     activeSlot = 0;
     State.session = Quiz.createSession({
       mode: MODE,
@@ -627,6 +630,13 @@
       numQuestions: State.numQuestions,
       seconds: State.seconds,
     });
+    loadCurrentQuestionPlan();
+    try {
+      await YTPlayers.prepare(2);
+      await YTPlayers.precue(activeSlot, currentPlaybackPlan.videoIds[0], currentPlaybackPlan.startSecondsList[0]);
+    } catch (e) { /* noop: 失敗しても通常のplayCurrentClip側の読み込みに任せる */ }
+    startBtn.disabled = false;
+    startBtn.textContent = "スタート!";
     showScreen("screen-game");
     renderQuestion();
   });
@@ -708,24 +718,20 @@
     // 再生中は「次へ」を押せないようにする(もう一度再生した曲を最後まで聞けるように)。
     nextBtn.disabled = true;
 
-    // 実際に音が鳴り始めるまではEQを動かさない(カウントダウンとの体感ズレを防ぐ)。
+    // 実際に音が鳴り始めるまでは「再生中」等の状態を名乗らない(待っているだけなのに
+    // 再生中と表示するのは実態と違うため)。「読み込み中」のような表示も出さず、
+    // 何も言わずに静かに待つ(ゲーム画面には待機/読み込み中の表示を一切出さない)。
     visual.classList.add("is-idle");
-    $("game-caption").textContent = captionText(true);
-    // 再生開始までは数字を出さず、実際に音が鳴り始めた瞬間にカウントダウンを
-    // 起動する(YTPlayersのonStartコールバック)。ここで先に数字を出してしまうと、
-    // 本当に鳴り始めた瞬間が視覚的にわかりにくくなり、体感のズレにつながる。
-    // 待っている間は静止させず、軽く脈動させて「固まっている」ように見えるのを防ぐ。
+    $("game-caption").textContent = "";
     const countdownEl = $("game-countdown");
     countdownEl.textContent = "•";
-    countdownEl.classList.add("is-waiting");
 
     YTPlayers.playSegments(videoIds, startSecondsList, playSeconds, () => {
       visual.classList.remove("is-idle");
-      countdownEl.classList.remove("is-waiting");
+      $("game-caption").textContent = captionText(true);
       startCountdown(playSeconds);
     }, activeSlot).then((results) => {
       stopCountdown();
-      countdownEl.classList.remove("is-waiting");
       visual.classList.add("is-idle");
       const anyError = results.some((r) => r.error);
       if (anyError) videoIds.forEach((id) => State.brokenVideoIds.add(id));
