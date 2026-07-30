@@ -351,7 +351,12 @@ def find_target_artist(artist: str):
 
     def _search_artists():
         try:
-            return _yt.search(artist, filter="artists", limit=10)
+            # 完全一致判定(exact_match_id)に使うため、クエリと同じ表記体系で
+            # 結果が返る日本語ロケールのクライアントで検索する。英語ロケールだと
+            # 日本語のクエリ(例:「いぎなり東北産」)がヒットしても、結果の
+            # artist名がローマ字化されて("THE MADE IN TOHOKU"など)一致判定に
+            # 使えなくなってしまう。
+            return _yt_ja.search(artist, filter="artists", limit=10)
         except Exception:
             return []
 
@@ -408,6 +413,15 @@ def find_target_artist(artist: str):
 
     if not artist_id:
         return None
+
+    # クエリ自体がこのアーティストの表記と完全一致していたなら、それをそのまま
+    # 正式名称として使う。get_artist()経由の名前解決に頼ると、日本語ロケール側の
+    # 取得がライブラリ内部のパースエラーで失敗して英語名にフォールバックして
+    # しまうことがあった(例:「いぎなり東北産」で検索したのに
+    # "THE MADE IN TOHOKU"になっていた不具合)。ユーザーが入力/選択した表記が
+    # 既に一致している以上、それより確実な情報源はない。
+    if exact_match_id and artist_id == exact_match_id:
+        return artist.strip(), artist_id
 
     # 英語ロケールの検索結果は日本語アーティスト名をローマ字化し、逆に日本語ロケールは
     # 欧米アーティスト名をカタカナ化してしまうため、両方取得して使い分ける。

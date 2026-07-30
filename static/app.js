@@ -765,11 +765,10 @@
     const visual = $("player-visual");
     const replayBtn = $("replay-btn");
     const skipBtn = $("skip-ahead-btn");
-    const nextBtn = $("answer-next");
     replayBtn.disabled = true;
     skipBtn.disabled = true;
-    // 再生中は「次へ」を押せないようにする(もう一度再生した曲を最後まで聞けるように)。
-    nextBtn.disabled = true;
+    // 「次へ」は再生中でも常に押せるようにする(押した場合は再生を打ち切って
+    // 次の問題へ進む。answer-nextのクリックハンドラ側で処理する)。
 
     // 実際に音が鳴り始めるまでは「再生中」等の状態を名乗らない(待っているだけなのに
     // 再生中と表示するのは実態と違うため)。「読み込み中」「待機中」のような文言は
@@ -813,7 +812,6 @@
         : captionText(false);
       replayBtn.disabled = false;
       skipBtn.disabled = false;
-      nextBtn.disabled = false;
       playbackBusy = false;
       if (isFirstPlay) {
         openAnswerArea();
@@ -959,6 +957,13 @@
 
   $("answer-next").addEventListener("click", () => {
     const session = State.session;
+    // もう一度再生/続きから再生で曲が流れている最中でも、次へを押したら
+    // その再生を打ち切ってすぐ次の問題に進む。
+    if (playbackBusy) {
+      YTPlayers.stop(activeSlot);
+      stopCountdown();
+      playbackBusy = false;
+    }
     if (session.isLastQuestion) {
       showResult(session);
     } else {

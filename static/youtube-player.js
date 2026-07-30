@@ -223,6 +223,19 @@ const YTPlayers = (() => {
       } catch (e) { /* noop */ }
     },
 
+    // 指定した1台だけを打ち切る(「次へ」を再生中に押した時、その曲だけ止めて
+    // 次の問題に進むための用途)。他のプレーヤー(先読み中の側)には触れない。
+    stop(playerIndex) {
+      if (activeCancel[playerIndex]) {
+        activeCancel[playerIndex]();
+        activeCancel[playerIndex] = null;
+      }
+      const player = pool[playerIndex];
+      if (player) {
+        try { player.pauseVideo(); } catch (e) { /* noop */ }
+      }
+    },
+
     stopAll() {
       activeCancel.forEach((cancel) => { if (cancel) cancel(); });
       activeCancel.length = 0;
