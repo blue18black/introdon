@@ -275,12 +275,14 @@ def _extract_playlist_id(url_or_id):
 
 def _fetch_playlist_by_id(playlist_id, limit=200):
     """get_playlist()は渡すIDの形式(先頭にVLが要るかどうか)がプレイリストの種類に
-    よって異なるため、両方試す。"""
+    よって異なるため、両方試す。英語ロケールのクライアントだとアーティスト名が
+    ローマ字化される(例:「アンジュルム」→"ANGERME")ため、日本語ロケールの
+    _yt_jaで取得する(アーティスト名解決と同じ理由)。"""
     variants = [playlist_id]
     variants.append(playlist_id[2:] if playlist_id.startswith("VL") else "VL" + playlist_id)
     for pid in variants:
         try:
-            playlist = _yt.get_playlist(pid, limit=limit)
+            playlist = _yt_ja.get_playlist(pid, limit=limit)
             if playlist and playlist.get("tracks"):
                 return playlist
         except Exception:

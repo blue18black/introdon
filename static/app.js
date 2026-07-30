@@ -750,8 +750,11 @@
     introSkipOffset = 0;
 
     loadCurrentQuestionPlan();
-    // 最初の再生が失敗した場合、この回数まで別の曲に差し替えて再挑戦する。
-    playCurrentClip({ isFirstPlay: true, retriesLeft: 3 });
+    // 最初の再生に失敗した場合、この回数まで別の曲に差し替えて再挑戦する。
+    // 「再生できませんでした」の表示自体をなるべく出したくないため、プール内の
+    // 候補が尽きるまで(replaceCurrentTrackがfalseを返すまで)粘れるよう、
+    // 実用上十分に大きい回数にしておく。
+    playCurrentClip({ isFirstPlay: true, retriesLeft: 20 });
   }
 
   // 現在の問題のクリップを(再生ボタン/少し先から再生ボタンからの再再生も含めて)再生する。
