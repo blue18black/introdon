@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>イントロドン</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div id="yt-players" class="yt-players"></div>
+
+<div id="app">
+
+  <!-- ホーム画面(イントロドンの設定を兼ねる) -->
+  <section id="screen-home" class="screen screen-scroll is-active">
+    <header class="home-header">
+      <h1 class="logo">イントロ<span class="logo-accent">ドン</span></h1>
+      <p class="tagline">曲当てクイズで盛り上がろう!</p>
+    </header>
+
+    <div class="setup-body">
+      <div class="setup-group">
+        <div class="setup-label">曲のソース</div>
+        <div class="tabs" id="source-tabs">
+          <button class="tab is-active" data-source="trending">流行</button>
+          <button class="tab" data-source="artist">アーティスト</button>
+          <button class="tab" data-source="playlist">プレイリスト</button>
+          <button class="tab" data-source="saved">保存済み</button>
+        </div>
+
+        <div id="source-trending" class="source-pane is-active">
+          <p class="hint">急上昇ランキングから出題します。</p>
+          <div class="pool-status" id="trending-status">読み込み中...</div>
+          <div class="trending-confirm-wrap">
+            <button id="trending-confirm-btn" class="artist-entry-confirm hidden" type="button">確認</button>
+            <div class="artist-entry-preview" id="trending-preview"></div>
+          </div>
+        </div>
+
+        <div id="source-artist" class="source-pane">
+          <div class="artist-input-wrap">
+            <input id="artist-input" type="text" placeholder="アーティスト名を入力(複数指定可)" autocomplete="off">
+            <button id="artist-clear-btn" class="artist-clear-btn hidden" type="button">×</button>
+          </div>
+          <ul id="artist-suggestions" class="artist-suggestions hidden"></ul>
+          <ul class="artist-entries" id="artist-chips"></ul>
+          <div class="pool-status" id="artist-status"></div>
+        </div>
+
+        <div id="source-playlist" class="source-pane">
+          <p class="hint">YouTube Musicのプレイリストのリンクを貼ると、そのまま曲リストとして使えます。</p>
+          <div class="artist-input-wrap">
+            <input id="playlist-input" type="text" placeholder="プレイリストのURLを貼り付け" autocomplete="off">
+          </div>
+          <button id="playlist-load-btn" class="btn-save" type="button">このプレイリストを読み込む</button>
+          <div class="pool-status" id="playlist-status"></div>
+        </div>
+
+        <div id="source-saved" class="source-pane">
+          <p class="hint">保存した曲リストを選んでスタートできます。</p>
+          <ul id="saved-datasets" class="saved-list"></ul>
+          <div class="pool-status" id="saved-status"></div>
+        </div>
+
+        <div class="save-dataset-row" id="save-dataset-row">
+          <button id="save-dataset-btn" class="btn-save" type="button" disabled>この曲リストを保存</button>
+        </div>
+      </div>
+
+      <div class="setup-group">
+        <div class="setup-label">問題数</div>
+        <div class="choice-row" id="choice-questions" data-value="10">
+          <button class="choice is-active" data-value="10">10問</button>
+          <button class="choice" data-value="15">15問</button>
+          <button class="choice" data-value="20">20問</button>
+        </div>
+      </div>
+
+      <div class="setup-group">
+        <div class="setup-label">再生する秒数</div>
+        <div class="choice-row" id="choice-seconds" data-value="2">
+          <button class="choice" data-value="0.5">0.5秒</button>
+          <button class="choice" data-value="1">1秒</button>
+          <button class="choice" data-value="1.5">1.5秒</button>
+          <button class="choice is-active" data-value="2">2秒</button>
+          <button class="choice" data-value="3">3秒</button>
+          <button class="choice" data-value="5">5秒</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="setup-footer">
+      <div id="setup-error" class="setup-error"></div>
+      <button id="setup-start" class="btn-start" disabled>スタート!</button>
+    </div>
+  </section>
+
+  <!-- ゲーム画面 -->
+  <section id="screen-game" class="screen screen-scroll">
+    <header class="game-header">
+      <button id="game-home" class="btn-home-nav" type="button">ホーム</button>
+      <div class="game-progress"><span id="game-qnum">1</span> / <span id="game-qtotal">10</span> 問</div>
+      <div class="game-score">スコア: <span id="game-score">0</span></div>
+    </header>
+
+    <div class="game-stage">
+      <div class="player-visual" id="player-visual">
+        <div class="eq-bars">
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <div class="countdown" id="game-countdown">5</div>
+      </div>
+      <div class="stage-caption" id="game-caption">再生中…この曲は何?</div>
+    </div>
+
+    <div class="answer-area" id="answer-area">
+      <div class="answer-choices" id="answer-choices"></div>
+      <div class="answer-actions">
+        <div class="answer-actions-secondary">
+          <button id="replay-btn" class="btn-replay" type="button">もう一度再生</button>
+          <button id="skip-ahead-btn" class="btn-replay" type="button">続きから再生</button>
+        </div>
+        <button id="answer-next" class="btn-next hidden" type="button">次へ</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- リザルト画面 -->
+  <section id="screen-result" class="screen screen-scroll">
+    <div class="result-inner">
+      <h2 class="result-title">リザルト</h2>
+      <div class="result-score">
+        <div class="result-score-num" id="result-score-num">0 / 0</div>
+        <div class="result-score-label" id="result-score-label">正解</div>
+      </div>
+      <button id="result-home" class="btn-home">ホームへ</button>
+      <ul class="result-list" id="result-list"></ul>
+    </div>
+  </section>
+
+</div>
+
+<script src="/static/api.js"></script>
+<script src="/static/youtube-player.js"></script>
+<script src="/static/quiz.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
