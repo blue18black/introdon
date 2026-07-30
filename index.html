@@ -44,6 +44,7 @@
           <p class="hint">YouTube Musicのプレイリストのリンクを貼ると、そのまま曲リストとして使えます。</p>
           <div class="artist-input-wrap">
             <input id="playlist-input" type="text" placeholder="プレイリストのURLを貼り付け" autocomplete="off">
+            <button id="playlist-clear-btn" class="artist-clear-btn hidden" type="button">×</button>
           </div>
           <button id="playlist-load-btn" class="btn-save" type="button">このプレイリストを読み込む</button>
           <div class="pool-status" id="playlist-status"></div>
@@ -126,7 +127,10 @@
         <div class="result-score-num" id="result-score-num">0 / 0</div>
         <div class="result-score-label" id="result-score-label">正解</div>
       </div>
-      <button id="result-home" class="btn-home">ホームへ</button>
+      <div class="result-actions">
+        <button id="result-retry" class="btn-home">もう一度</button>
+        <button id="result-home" class="btn-home-secondary">ホームへ</button>
+      </div>
       <ul class="result-list" id="result-list"></ul>
     </div>
   </section>

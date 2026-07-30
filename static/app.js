@@ -97,6 +97,25 @@
     }
   });
 
+  // 間違ったURLを入力してしまった時に、入力欄と読み込み済みの内容をクリアできるようにする。
+  const playlistClearBtn = $("playlist-clear-btn");
+  playlistInput.addEventListener("input", () => {
+    playlistClearBtn.classList.toggle("hidden", playlistInput.value.trim().length === 0);
+  });
+  playlistClearBtn.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    playlistInput.value = "";
+    playlistClearBtn.classList.add("hidden");
+    playlistInput.focus();
+    State.playlistPool = null;
+    State.lastPlaylistTitle = "";
+    if (State.source === "playlist") State.pool = null;
+    const statusEl = $("playlist-status");
+    statusEl.textContent = "";
+    statusEl.classList.remove("is-error");
+    updateStartButtonState();
+  });
+
   // ---- アーティスト検索(サジェスト付きライブ検索、複数指定可) ----
   const artistInput = $("artist-input");
   const artistClearBtn = $("artist-clear-btn");
@@ -292,7 +311,20 @@
       if (loadingArtistKeys.has(`${entry.name}::${entry.scope}`)) {
         const loadingEl = document.createElement("div");
         loadingEl.className = "artist-entry-loading";
-        loadingEl.textContent = "曲を取得中...(曲数が多いと時間がかかります)";
+        const loadingText = document.createElement("span");
+        loadingText.textContent = "曲を取得中...(曲数が多いと時間がかかります)";
+        loadingEl.appendChild(loadingText);
+
+        const cancelBtn = document.createElement("button");
+        cancelBtn.type = "button";
+        cancelBtn.className = "artist-entry-loading-cancel";
+        cancelBtn.textContent = "中断";
+        cancelBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          cancelArtistFetch(entry.name, entry.scope);
+        });
+        loadingEl.appendChild(cancelBtn);
+
         li.appendChild(loadingEl);
       }
 
@@ -364,17 +396,28 @@
     });
   }
 
+  const artistFetchControllers = {}; // `${name}::${scope}` -> AbortController(中断ボタン用)
+
+  function cancelArtistFetch(name, scope) {
+    const key = `${name}::${scope}`;
+    const controller = artistFetchControllers[key];
+    if (controller) controller.abort();
+  }
+
   async function fetchArtistPoolCached(name, scope) {
     const key = `${name}::${scope}`;
     if (State.artistTrackCache[key]) return State.artistTrackCache[key];
     loadingArtistKeys.add(key);
+    const controller = new AbortController();
+    artistFetchControllers[key] = controller;
     renderArtistEntries();
     try {
-      const result = await Api.getArtistTracks(name, scope);
+      const result = await Api.getArtistTracks(name, scope, controller.signal);
       State.artistTrackCache[key] = result;
       return result;
     } finally {
       loadingArtistKeys.delete(key);
+      delete artistFetchControllers[key];
     }
   }
 
@@ -616,13 +659,15 @@
   }
 
   // 「読み込みが多すぎてしらける」を避けるため、プレーヤーの準備と最初の曲の
-  // 先読みはゲーム画面に切り替える前(ホーム画面にいる間)に済ませておく。
-  // これによりゲーム画面側には「読み込み中」のような表示は一切出さず、
-  // 画面が切り替わった時点でほぼ即座に再生を始められる。
-  $("setup-start").addEventListener("click", async () => {
-    const startBtn = $("setup-start");
-    startBtn.disabled = true;
-    startBtn.textContent = "準備中...";
+  // 先読みはゲーム画面に切り替える前(ホーム画面/リザルト画面にいる間)に
+  // 済ませておく。これによりゲーム画面側には「読み込み中」のような表示は
+  // 一切出さず、画面が切り替わった時点でほぼ即座に再生を始められる。
+  // 最初の切り替え(1問目→2問目)でもラグが出ないよう、2問目分もここで
+  // 先読みしておく(3問目以降は毎問、答え合わせ中に次を先読みする)。
+  async function startGame(triggerBtn) {
+    const originalLabel = triggerBtn.textContent;
+    triggerBtn.disabled = true;
+    triggerBtn.textContent = "準備中...";
     activeSlot = 0;
     State.session = Quiz.createSession({
       mode: MODE,
@@ -633,13 +678,19 @@
     loadCurrentQuestionPlan();
     try {
       await YTPlayers.prepare(2);
-      await YTPlayers.precue(activeSlot, currentPlaybackPlan.videoIds[0], currentPlaybackPlan.startSecondsList[0]);
+      await YTPlayers.precue(0, currentPlaybackPlan.videoIds[0], currentPlaybackPlan.startSecondsList[0]);
+      if (State.session.questions.length > 1) {
+        const secondTrack = State.session.questions[1].tracks[0];
+        await YTPlayers.precue(1, secondTrack.videoId, 0);
+      }
     } catch (e) { /* noop: 失敗しても通常のplayCurrentClip側の読み込みに任せる */ }
-    startBtn.disabled = false;
-    startBtn.textContent = "スタート!";
+    triggerBtn.disabled = false;
+    triggerBtn.textContent = originalLabel;
     showScreen("screen-game");
     renderQuestion();
-  });
+  }
+
+  $("setup-start").addEventListener("click", () => startGame($("setup-start")));
 
   // ---------------- ゲーム画面 ----------------
 
@@ -971,4 +1022,6 @@
   }
 
   $("result-home").addEventListener("click", goHome);
+  // 同じ設定(曲プール・問題数・秒数)のままもう一度遊べるようにする。
+  $("result-retry").addEventListener("click", () => startGame($("result-retry")));
 })();

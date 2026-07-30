@@ -118,6 +118,12 @@ def _pick_winner(unique):
     return max(
         candidates,
         key=lambda t: (
+            # シングル/アルバムとしてカタログ登録されている曲を、動画セクション
+            # (MV等)由来の曲より常に優先する。MVは音源が別ミックスのことがあり、
+            # タイトルの表記が同じでどちらを残すか決め手がない場合、動画セクション
+            # 由来のtype=""(fetch_video_tracks参照)が先頭に来て誤って勝ってしまう
+            # ことがあった。
+            1 if t.get("type") in ("シングル・EP", "アルバム") else 0,
             _year_value(t.get("year")),
             1 if t.get("type") == "シングル・EP" else 0,
             1 if "通常盤" in (t.get("album") or "") else 0,

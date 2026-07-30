@@ -35,17 +35,25 @@ const Quiz = (() => {
   function buildQuestions({ pool, mode, numQuestions, tracksPerQuestion }) {
     const bag = makeBag(pool);
     const questions = [];
+    // ゲーム全体を通して同じ曲が何度も出題されないようにする。プールのユニークな
+    // 曲数がnumQuestions分に足りている限り、一度出した曲は避け続ける。プールが
+    // 足りない場合のみ(setup-errorで警告済み)、やむを得ず重複を許可する。
+    const usedVideoIds = new Set();
+    const uniqueCount = new Set(pool.map((t) => t.videoId)).size;
+
     for (let q = 0; q < numQuestions; q++) {
       const picked = [];
       const seenIds = new Set();
       let guard = 0;
-      while (picked.length < tracksPerQuestion && guard < pool.length * 4 + 20) {
+      while (picked.length < tracksPerQuestion && guard < pool.length * 8 + 40) {
         guard++;
         const track = bag.next();
         if (seenIds.has(track.videoId)) continue;
+        if (usedVideoIds.has(track.videoId) && usedVideoIds.size < uniqueCount) continue;
         seenIds.add(track.videoId);
         picked.push(track);
       }
+      picked.forEach((t) => usedVideoIds.add(t.videoId));
       const numChoices = Math.min(pool.length, tracksPerQuestion * 2 + 2);
       const choices = pickChoices(pool, picked, numChoices);
       questions.push({ tracks: picked, choices });
@@ -116,7 +124,17 @@ const Quiz = (() => {
       // 差し替え先が見つかればtrue、pool内に候補が残っていなければfalseを返す。
       replaceCurrentTrack(excludeVideoIds = []) {
         const excluded = new Set(excludeVideoIds);
-        const candidates = pool.filter((t) => !excluded.has(t.videoId));
+        // 差し替え先が、ゲーム内の他の問題で既に使われている曲と重複しないようにする。
+        questions.forEach((q, i) => {
+          if (i === this.currentIndex) return;
+          q.tracks.forEach((t) => excluded.add(t.videoId));
+        });
+        let candidates = pool.filter((t) => !excluded.has(t.videoId));
+        if (candidates.length === 0) {
+          // 重複回避を優先しすぎて候補が尽きた場合は、再生できない曲を避けることを
+          // 優先し、他の問題との重複は許容する。
+          candidates = pool.filter((t) => !new Set(excludeVideoIds).has(t.videoId));
+        }
         if (candidates.length === 0) return false;
         const newTrack = candidates[Math.floor(Math.random() * candidates.length)];
         const numChoices = Math.min(pool.length, tracksPerQuestion * 2 + 2);

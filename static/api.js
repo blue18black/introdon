@@ -1,10 +1,11 @@
 // バックエンドAPI呼び出し
 const Api = {
-  async _get(url) {
+  async _get(url, signal) {
     let res;
     try {
-      res = await fetch(url);
+      res = await fetch(url, { signal });
     } catch (networkErr) {
+      if (networkErr.name === "AbortError") throw networkErr;
       throw new Error("サーバーに接続できませんでした。python app.py が起動しているか確認してください。");
     }
     let data;
@@ -37,9 +38,9 @@ const Api = {
     }
   },
 
-  async getArtistTracks(name, scope = "all") {
+  async getArtistTracks(name, scope = "all", signal) {
     const params = new URLSearchParams({ name, scope });
-    const data = await this._get(`/api/artist_tracks?${params.toString()}`);
+    const data = await this._get(`/api/artist_tracks?${params.toString()}`, signal);
     return data;
   },
 

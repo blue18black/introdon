@@ -312,8 +312,10 @@ input {
   inset: 0;
   z-index: 10;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   text-align: center;
   padding: 4px 8px;
   background: rgba(245, 245, 247, 0.94);
@@ -322,6 +324,16 @@ input {
   font-weight: 700;
   color: var(--ink);
 }
+.artist-entry-loading-cancel {
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--danger);
+}
+.artist-entry-loading-cancel:active { transform: translateY(1px); }
 
 .artist-entry-confirm {
   flex: 0 0 auto;
@@ -750,8 +762,14 @@ input {
 .result-song-row.is-missed { color: var(--danger); }
 .result-item-extra { margin-top: 6px; font-size: 0.76rem; opacity: 0.55; }
 
-.btn-home {
+.result-actions {
   width: 100%;
+  display: flex;
+  gap: 10px;
+}
+
+.btn-home {
+  flex: 1 1 0;
   padding: 14px;
   border-radius: 12px;
   background: var(--ink);
@@ -762,3 +780,16 @@ input {
   box-shadow: 0 10px 24px rgba(28, 27, 41, 0.18);
 }
 .btn-home:active { transform: translateY(1px); box-shadow: 0 4px 10px rgba(28, 27, 41, 0.16); }
+
+.btn-home-secondary {
+  flex: 1 1 0;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--ink);
+  font-weight: 800;
+  font-size: 1rem;
+  letter-spacing: 0.02em;
+}
+.btn-home-secondary:active { transform: translateY(1px); }
