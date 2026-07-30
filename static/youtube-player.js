@@ -71,19 +71,51 @@ const YTPlayers = (() => {
       let started = false;
       let retried = false;
       let timeoutId = null;
+      // playSecondsの計測は「実際にPLAYING状態だった時間の合計」で行う。
+      // 再生開始後に回線都合等で一瞬BUFFERINGへ戻ることがあり、以前は最初の
+      // PLAYINGから壁時計時間で一度きり計測していたため、その無音の間も
+      // カウントが進んでしまい、指定した秒数より短い音しか流せていなかった。
+      // BUFFERING等に入ったら残り時間を確定させてタイマーを止め、PLAYINGに
+      // 戻ったら残り時間からタイマーを再開する。
+      let remainingMs = playSeconds * 1000;
+      let segmentStartedAt = null;
 
-      // playSecondsの計測は「実際に音が鳴り始めた瞬間」を起点にする。loadVideoById()
-      // 呼び出し直後ではバッファリング等で数百ms~数秒のずれが出て、画面のカウントダウン
-      // と体感の再生タイミングが合わなくなるため。
+      const pauseTimer = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+        if (segmentStartedAt !== null) {
+          remainingMs -= Date.now() - segmentStartedAt;
+          segmentStartedAt = null;
+        }
+      };
+
+      const resumeTimer = () => {
+        if (settled || timeoutId) return;
+        segmentStartedAt = Date.now();
+        timeoutId = setTimeout(finish, Math.max(0, remainingMs));
+      };
+
       const begin = () => {
-        if (started || settled) return;
-        started = true;
-        if (onStart) onStart();
-        timeoutId = setTimeout(finish, playSeconds * 1000);
+        if (settled) return;
+        if (!started) {
+          started = true;
+          if (onStart) onStart();
+        }
+        resumeTimer();
       };
 
       const onStateChange = (e) => {
-        if (e.data === YT.PlayerState.PLAYING) begin();
+        if (e.data === YT.PlayerState.PLAYING) {
+          begin();
+        } else if (e.data === YT.PlayerState.ENDED) {
+          finish();
+        } else if (started) {
+          // BUFFERING/PAUSEDなどで音が止まっている間は、その分を持ち時間から
+          // 差し引かないようタイマーを一時停止する。
+          pauseTimer();
+        }
       };
       const onError = () => {
         if (settled) return;

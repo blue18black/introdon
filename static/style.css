@@ -600,6 +600,17 @@ input {
   50% { opacity: 1; transform: scale(1.05); }
 }
 .stage-caption {
+  /* 文言の長さ(空文字/短い文/折り返す長い文)によって高さが変わると、
+     .game-stageがjustify-content:centerで丸ごと中央寄せしているため、
+     上の丸(player-visual)の位置までつられて動いてしまう。文言の有無や
+     行数によらず高さを常に2行分で固定し、丸の位置がずれないようにする。 */
+  flex: 0 0 auto;
+  width: 100%;
+  height: 2.6em;
+  line-height: 1.3em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-weight: 600;
   color: var(--ink);
   opacity: 0.6;
