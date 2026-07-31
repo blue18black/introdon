@@ -525,10 +525,11 @@ input {
 .btn-home-nav:active { transform: translateY(1px); }
 
 .game-stage {
-  /* 選択肢(answer-area)の表示/非表示で高さが変わっても、この中の丸いビジュアルの
-     位置がずれないよう、伸縮させず固定の高さにしておく。 */
+  /* 通常時はこの高さで丸の位置を安定させる。ただし正解発表時など文言が長く
+     なった場合はmin-heightなので伸びられるようにし、下の選択肢と重なって
+     見えるのを防ぐ(stage-captionのmin-heightと合わせて対応)。 */
   flex: 0 0 auto;
-  height: min(160px, 22vh);
+  min-height: min(160px, 22vh);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -603,11 +604,14 @@ input {
 .stage-caption {
   /* 文言の長さ(空文字/短い文/折り返す長い文)によって高さが変わると、
      .game-stageがjustify-content:centerで丸ごと中央寄せしているため、
-     上の丸(player-visual)の位置までつられて動いてしまう。文言の有無や
-     行数によらず高さを常に2行分で固定し、丸の位置がずれないようにする。 */
+     上の丸(player-visual)の位置までつられて動いてしまう。最低でも2行分の
+     高さは確保して丸の位置がずれないようにしつつ、正解発表時の「残念…正解は
+     「曲名」」のように2行を超える長さになった場合はheight固定だとその下の
+     選択肢と重なって見えてしまっていたため、min-heightにして必要な分は
+     伸びられるようにする。 */
   flex: 0 0 auto;
   width: 100%;
-  height: 2.6em;
+  min-height: 2.6em;
   line-height: 1.3em;
   display: flex;
   align-items: center;

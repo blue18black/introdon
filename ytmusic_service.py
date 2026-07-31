@@ -896,8 +896,23 @@ def _fetch_official_mix_tracks(artist_id):
         tracks.append(track)
 
     tracks = _dedupe_playlist_tracks(tracks)
-    _ARTIST_MIX_CACHE[artist_id] = tracks
-    return tracks
+
+    # ミックスは自動生成のシャッフルなので、同じ曲がMV版・音源版などで別々の
+    # videoIdとして2件混ざっていることがある(完全一致のvideoId重複除去だけでは
+    # 検出できない)。プレイリストと違いユーザーが選んだ内容ではないため、
+    # 曲名ベースで「先に出てきた方を残す」重複除去を追加で行う(別バージョンへ
+    # 差し替えるわけではなく、後から出てきた方を単に捨てるだけ)。
+    seen_titles = set()
+    deduped = []
+    for t in tracks:
+        key = normalize_title(t["title"])
+        if key in seen_titles:
+            continue
+        seen_titles.add(key)
+        deduped.append(t)
+
+    _ARTIST_MIX_CACHE[artist_id] = deduped
+    return deduped
 
 
 _ARTIST_VIDEO_CACHE = {}

@@ -309,7 +309,8 @@
 
       // 取得中はこのアーティストの行だけにステータスを重ねて表示する
       // (他のアーティストの行やスタート画面の高さには影響させない)。
-      if (loadingArtistKeys.has(`${entry.name}::${entry.scope}`)) {
+      const entryKey = `${entry.name}::${entry.scope}`;
+      if (loadingArtistKeys.has(entryKey)) {
         const loadingEl = document.createElement("div");
         loadingEl.className = "artist-entry-loading";
         const loadingText = document.createElement("span");
@@ -328,6 +329,27 @@
         loadingEl.appendChild(cancelBtn);
 
         li.appendChild(loadingEl);
+      } else if (cancelledArtistKeys.has(entryKey)) {
+        // 中断した後は何も表示されなくなり、再取得する手段が無かったため、
+        // 再開ボタンを出して同じ取得をもう一度試せるようにする。
+        const resumeEl = document.createElement("div");
+        resumeEl.className = "artist-entry-loading";
+        const resumeText = document.createElement("span");
+        resumeText.className = "artist-entry-loading-text";
+        resumeText.textContent = "取得を中断しました";
+        resumeEl.appendChild(resumeText);
+
+        const resumeBtn = document.createElement("button");
+        resumeBtn.type = "button";
+        resumeBtn.className = "artist-entry-loading-cancel";
+        resumeBtn.textContent = "再開";
+        resumeBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          resumeArtistFetch(entry);
+        });
+        resumeEl.appendChild(resumeBtn);
+
+        li.appendChild(resumeEl);
       }
 
       const nameEl = document.createElement("div");
@@ -399,16 +421,27 @@
   }
 
   const artistFetchControllers = {}; // `${name}::${scope}` -> AbortController(中断ボタン用)
+  const cancelledArtistKeys = new Set(); // `${name}::${scope}` 中断済み(再開ボタンを出す)
 
   function cancelArtistFetch(name, scope) {
     const key = `${name}::${scope}`;
     const controller = artistFetchControllers[key];
     if (controller) controller.abort();
+    cancelledArtistKeys.add(key);
+    renderArtistEntries();
+  }
+
+  function resumeArtistFetch(entry) {
+    const key = `${entry.name}::${entry.scope}`;
+    cancelledArtistKeys.delete(key);
+    renderArtistEntries();
+    refreshArtistPool();
   }
 
   async function fetchArtistPoolCached(name, scope) {
     const key = `${name}::${scope}`;
     if (State.artistTrackCache[key]) return State.artistTrackCache[key];
+    cancelledArtistKeys.delete(key);
     loadingArtistKeys.add(key);
     const controller = new AbortController();
     artistFetchControllers[key] = controller;
