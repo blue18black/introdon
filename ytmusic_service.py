@@ -908,14 +908,29 @@ def _resolve_all_tracks_quality(tracks, artist_name):
 _ARTIST_MIX_CACHE = {}
 
 
+def _build_catalog_lookup(artist_id):
+    """アーティストの全曲カタログ(fetch_all_tracks、キャッシュ済み)を曲名の
+    正規化キーで引けるようにする。シングル/アルバムの方を動画セクション
+    (MV等)由来より優先する(_pick_winnerと同じ考え方)。"""
+    lookup = {}
+    for t in fetch_all_tracks(artist_id):
+        if not t.get("videoId") or not t.get("title"):
+            continue
+        key = normalize_title(t["title"])
+        is_catalog = t.get("type") in ("シングル・EP", "アルバム")
+        existing = lookup.get(key)
+        if existing is None or (is_catalog and existing.get("type") not in ("シングル・EP", "アルバム")):
+            lookup[key] = t
+    return lookup
+
+
 def _fetch_official_mix_tracks(artist_id):
     """アーティストページの「シャッフル」ボタンに相当する、YouTube Music公式の
     おまかせミックス(shuffleId)から曲を取得する。「Presenting <アーティスト>」の
     ような公式プレイリストは検索で確実に見つける方法が無かったため、代わりに
     これを使う。get_watch_playlistが返すtrackの形はアルバム/プレイリスト由来の
     trackと項目名が違う(lengthが"4:28"形式の文字列、thumbnailが単数形)ため、
-    他の関数と同じ形(duration_seconds/thumbnails)に合わせておく。
-    プレイリストと同じ方針で、表記ゆれによる重複解決(差し替え)はしない。"""
+    他の関数と同じ形(duration_seconds/thumbnails)に合わせておく。"""
     if artist_id in _ARTIST_MIX_CACHE:
         return _ARTIST_MIX_CACHE[artist_id]
 
@@ -945,13 +960,24 @@ def _fetch_official_mix_tracks(artist_id):
         track["thumbnails"] = t.get("thumbnail") or []
         tracks.append(track)
 
+    # ミックス(シャッフル)は必ずしもシングル/アルバム版を選んでくれるとは限らず、
+    # MVや別テイクが混ざることがある(例: 「WAO！アオハル！」でミックスがMVを、
+    # カタログはシングルを指していて別のvideoIdだった)。曲名が一致するシングル/
+    # アルバムがカタログに存在すれば、そちらのvideoIdに差し替える。
+    catalog_lookup = _build_catalog_lookup(artist_id)
+    for t in tracks:
+        match = catalog_lookup.get(normalize_title(t["title"]))
+        if match and match.get("videoId") and match["videoId"] != t["videoId"]:
+            t["videoId"] = match["videoId"]
+            t["title"] = strip_variant_for_display(clean_title(match.get("title") or t["title"]))
+            if match.get("duration_seconds"):
+                t["duration_seconds"] = match["duration_seconds"]
+
     tracks = _dedupe_playlist_tracks(tracks)
 
-    # ミックスは自動生成のシャッフルなので、同じ曲がMV版・音源版などで別々の
-    # videoIdとして2件混ざっていることがある(完全一致のvideoId重複除去だけでは
-    # 検出できない)。プレイリストと違いユーザーが選んだ内容ではないため、
-    # 曲名ベースで「先に出てきた方を残す」重複除去を追加で行う(別バージョンへ
-    # 差し替えるわけではなく、後から出てきた方を単に捨てるだけ)。
+    # 上の差し替えで複数のミックス曲が同じカタログ曲に収束することがあるほか、
+    # ミックス自体に同じ曲がMV版・音源版などで別videoIdとして混ざっていることも
+    # あるため、曲名ベースで「先に出てきた方を残す」重複除去も行う。
     seen_titles = set()
     deduped = []
     for t in tracks:
