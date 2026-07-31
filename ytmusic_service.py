@@ -247,22 +247,37 @@ def _is_embeddable(video_id):
     404を返す--これがイントロクイズで「曲が流れない」の大半の原因(youtube-player.js
     のonErrorで検出しているのと同じ制約)。ここで弾いておくことで、出題時にその
     問題に当たる頻度そのものを減らす。
-    タイムアウトなど判定不能な場合は誤って曲を減らさないよう埋め込み可能とみなす
-    (本当に再生できない曲は、クイズ側の差し替えロジックが最終的な保険になる)。
+    401/404以外の失敗(タイムアウト等)は、曲数の多いアーティストを一気に並列
+    チェックした時にYouTube側から一時的にレート制限され、本来「再生不可」なはずの
+    曲まで「念のため再生可能扱い」になってしまうことがあった。取得が遅くなっても
+    正確さを優先し、間を置いて1回だけ再試行してから、それでも判定できない場合だけ
+    誤って曲を減らさないよう埋め込み可能とみなす(それでも本当に再生できない曲は、
+    クイズ側の差し替えロジックが最終的な保険になる)。
     """
     if video_id in _EMBEDDABLE_CACHE:
         return _EMBEDDABLE_CACHE[video_id]
     url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-    ok = True
-    try:
+
+    def attempt():
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=4) as res:
-            ok = res.status == 200
-    except urllib.error.HTTPError as e:
-        # 401(埋め込み不可)/404(動画が存在しない)は確実な「再生不可」シグナル。
-        ok = e.code not in (401, 404)
-    except Exception:
-        ok = True
+            return res.status == 200
+
+    ok = True
+    for i in range(2):
+        try:
+            ok = attempt()
+            break
+        except urllib.error.HTTPError as e:
+            # 401(埋め込み不可)/404(動画が存在しない)は確実な「再生不可」シグナルなので
+            # 再試行しても意味がない。
+            ok = e.code not in (401, 404)
+            break
+        except Exception:
+            if i == 0:
+                time.sleep(0.5)
+                continue
+            ok = True
     _EMBEDDABLE_CACHE[video_id] = ok
     return ok
 
@@ -270,7 +285,9 @@ def _is_embeddable(video_id):
 def _filter_embeddable(tracks):
     if not tracks:
         return tracks
-    with ThreadPoolExecutor(max_workers=16) as pool:
+    # 並列数を減らし、大量アクセスによる一時的なレート制限(→誤った再生可能判定)を
+    # 起きにくくする。取得は遅くなるが、正確さを優先する。
+    with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda t: _is_embeddable(t["videoId"]), tracks))
     return [t for t, ok in zip(tracks, results) if ok]
 
