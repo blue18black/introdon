@@ -312,9 +312,27 @@ def _fetch_playlist_by_id(playlist_id, limit=200):
     return None
 
 
+def _dedupe_playlist_tracks(tracks):
+    """プレイリストは基本的にユーザーが選んだ通りの曲を使いたいので、
+    _clean_and_dedupeのような「表記ゆれで同じ曲とみなして1曲に絞り込む」
+    (=結果的に別のバージョンに差し替わることがある)処理はしない。
+    プレイリスト内にたまたま同じ動画が2回入っている場合だけ、その完全一致分を除く。"""
+    tracks = [t for t in tracks if t.get("videoId") and t.get("title")]
+    seen_ids = set()
+    deduped = []
+    for t in tracks:
+        if t["videoId"] in seen_ids:
+            continue
+        seen_ids.add(t["videoId"])
+        deduped.append(t)
+    return deduped
+
+
 def get_playlist_tracks(url_or_id):
     """YouTube Music/YouTubeのプレイリストのURL(またはID)から曲一覧を取得する。
-    見つからない場合はNoneを返す。"""
+    見つからない場合はNoneを返す。プレイリストに実際に入っている曲をそのまま
+    使う(表記ゆれ重複解決による差し替えはしない。完全一致の重複除去と、
+    埋め込み再生できない動画の除外だけ行う)。"""
     playlist_id = _extract_playlist_id(url_or_id)
     if not playlist_id:
         return None
@@ -323,7 +341,7 @@ def get_playlist_tracks(url_or_id):
     if not playlist:
         return None
 
-    raw_tracks = _clean_and_dedupe(playlist.get("tracks") or [])
+    raw_tracks = _dedupe_playlist_tracks(playlist.get("tracks") or [])
     raw_tracks = _filter_embeddable(raw_tracks)
 
     tracks = []
