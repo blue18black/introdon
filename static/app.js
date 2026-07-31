@@ -523,6 +523,10 @@
       row.dataset.value = btn.dataset.value;
       if (row.id === "choice-questions") State.numQuestions = parseInt(btn.dataset.value, 10);
       if (row.id === "choice-seconds") State.seconds = parseFloat(btn.dataset.value);
+      // 問題数を変えた時、「曲数が少ないため重複することがある」の警告が
+      // 古い問題数のまま表示され続けていた(問題数変更時にstart button側の
+      // 再評価が呼ばれていなかったため)。
+      updateStartButtonState();
     });
   });
 
