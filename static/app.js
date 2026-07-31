@@ -125,8 +125,9 @@
     { value: "top25", label: "Top25" },
     { value: "top50", label: "Top50" },
     { value: "all", label: "全曲" },
+    { value: "mix", label: "ミックス" },
   ];
-  const SCOPE_LABEL = { top25: "Top25", top50: "Top50", all: "全曲" };
+  const SCOPE_LABEL = { top25: "Top25", top50: "Top50", all: "全曲", mix: "公式ミックス" };
 
   let suggestAbortController = null;
   let suggestRequestId = 0;

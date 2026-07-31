@@ -35,7 +35,7 @@ def api_artist_suggest():
 def api_artist_tracks():
     artist_name = request.args.get("name", "").strip()
     scope = request.args.get("scope", "all")
-    if scope not in ("all", "top25", "top50"):
+    if scope not in ("all", "top25", "top50", "mix"):
         scope = "all"
     if not artist_name:
         return jsonify({"error": "アーティスト名を指定してください。"}), 400

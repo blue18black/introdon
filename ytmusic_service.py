@@ -855,6 +855,51 @@ def _resolve_all_tracks_quality(tracks, artist_name):
     return result
 
 
+_ARTIST_MIX_CACHE = {}
+
+
+def _fetch_official_mix_tracks(artist_id):
+    """アーティストページの「シャッフル」ボタンに相当する、YouTube Music公式の
+    おまかせミックス(shuffleId)から曲を取得する。「Presenting <アーティスト>」の
+    ような公式プレイリストは検索で確実に見つける方法が無かったため、代わりに
+    これを使う。get_watch_playlistが返すtrackの形はアルバム/プレイリスト由来の
+    trackと項目名が違う(lengthが"4:28"形式の文字列、thumbnailが単数形)ため、
+    他の関数と同じ形(duration_seconds/thumbnails)に合わせておく。
+    プレイリストと同じ方針で、表記ゆれによる重複解決(差し替え)はしない。"""
+    if artist_id in _ARTIST_MIX_CACHE:
+        return _ARTIST_MIX_CACHE[artist_id]
+
+    shuffle_id = None
+    for client in (_yt_ja, _yt):
+        try:
+            shuffle_id = client.get_artist(artist_id).get("shuffleId")
+            if shuffle_id:
+                break
+        except Exception:
+            continue
+
+    raw_tracks = []
+    if shuffle_id:
+        try:
+            wp = _yt_ja.get_watch_playlist(playlistId=shuffle_id, limit=50)
+            raw_tracks = wp.get("tracks") or []
+        except Exception:
+            raw_tracks = []
+
+    tracks = []
+    for t in raw_tracks:
+        if not t.get("videoId") or not t.get("title"):
+            continue
+        track = dict(t)
+        track["duration_seconds"] = _duration_str_to_seconds(t.get("length"))
+        track["thumbnails"] = t.get("thumbnail") or []
+        tracks.append(track)
+
+    tracks = _dedupe_playlist_tracks(tracks)
+    _ARTIST_MIX_CACHE[artist_id] = tracks
+    return tracks
+
+
 _ARTIST_VIDEO_CACHE = {}
 _VIDEO_TITLE_RE = re.compile(r"[「『]([^」』]+)[」』]")
 _LIVE_VIDEO_RE = re.compile(r"live|tour|ライブ|ツアー", re.IGNORECASE)
@@ -903,7 +948,8 @@ def fetch_video_tracks(artist_id):
 def get_artist_tracks(artist_name, scope="all"):
     """アーティスト名(表記ゆれ・ローマ字表記でも可)から曲一覧を取得する。見つからない
     場合はNoneを返す。歌詞データが不要なlyrics-quizと異なり、scope="all"で全曲、
-    "top25"/"top50"で再生回数ランキング上位に絞り込んで取得できる。"""
+    "top25"/"top50"で再生回数ランキング上位、"mix"でYouTube Music公式のおまかせ
+    ミックス(シャッフル)に絞り込んで取得できる。"""
     target = find_target_artist(artist_name)
     if not target:
         return None
@@ -923,6 +969,8 @@ def get_artist_tracks(artist_name, scope="all"):
                 if t["videoId"] not in have_ids:
                     tracks.append(t)
                     have_ids.add(t["videoId"])
+    elif scope == "mix":
+        tracks = _filter_embeddable(_fetch_official_mix_tracks(artist_id))
     else:
         # fetch_all_tracks自体がアルバム/シングル未登録の動画限定曲も含めて
         # 返すため、ここで別途動画セクションへフォールバックする必要はない。
