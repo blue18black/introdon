@@ -713,6 +713,7 @@
   let currentPlaybackPlan = null; // {videoIds, startSecondsList, playSeconds}
   let playbackBusy = false;
   let selectedChoiceIndex = -1; // 十字キーでの選択位置
+  let focusedActionBtn = null; // 十字キーでの選択位置(選択肢ではなく"replay"/"skip"にいる場合)
   let introSkipOffset = 0; // 「続きから再生」で加算される開始位置のオフセット(秒)
   // 2つのプレーヤーを交互に使う。片方で今の問題を再生している間、もう片方に
   // 次の問題の曲を裏側で読み込んでおく(precue)ことで、実際に切り替わった時の
@@ -901,6 +902,7 @@
     const wrap = $("answer-choices");
     wrap.innerHTML = "";
     selectedChoiceIndex = -1;
+    focusedActionBtn = null;
     session.currentQuestion.choices.forEach((track) => {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -910,6 +912,7 @@
       btn.addEventListener("click", () => selectAnswer(track, btn));
       wrap.appendChild(btn);
     });
+    updateActionBtnHighlight();
   }
 
   function updateChoiceHighlight() {
@@ -918,11 +921,52 @@
     });
   }
 
+  function updateActionBtnHighlight() {
+    $("replay-btn").classList.toggle("keyboard-selected", focusedActionBtn === "replay");
+    $("skip-ahead-btn").classList.toggle("keyboard-selected", focusedActionBtn === "skip");
+  }
+
+  // 選択肢の並びともう一度再生/続きから再生のボタン行を、ひとつながりの
+  // 環状リストとして扱う: 最後の選択肢から下へ行くとボタン行(もう一度再生)へ、
+  // ボタン行から下へ行くと先頭の選択肢へ戻る(上はその逆順)。解答済みで選択肢が
+  // 選べない状態でも、もう一度再生/続きから再生へは移動できるようにする。
   function moveChoiceSelection(delta) {
     const items = Array.from($("answer-choices").children);
-    if (items.length === 0 || items[0].disabled) return;
-    selectedChoiceIndex = (selectedChoiceIndex + delta + items.length) % items.length;
+    if (items.length === 0) return;
+
+    if (focusedActionBtn) {
+      focusedActionBtn = null;
+      selectedChoiceIndex = delta > 0 ? 0 : items.length - 1;
+      updateChoiceHighlight();
+      updateActionBtnHighlight();
+      return;
+    }
+
+    if (items[0].disabled) {
+      selectedChoiceIndex = -1;
+      focusedActionBtn = "replay";
+      updateChoiceHighlight();
+      updateActionBtnHighlight();
+      return;
+    }
+
+    const next = selectedChoiceIndex + delta;
+    if (next < 0 || next >= items.length) {
+      selectedChoiceIndex = -1;
+      focusedActionBtn = "replay";
+      updateChoiceHighlight();
+      updateActionBtnHighlight();
+      return;
+    }
+    selectedChoiceIndex = next;
     updateChoiceHighlight();
+  }
+
+  // もう一度再生⇄続きから再生の間の左右移動。
+  function moveActionBtnSelection(delta) {
+    if (!focusedActionBtn) return;
+    focusedActionBtn = delta > 0 ? "skip" : "replay";
+    updateActionBtnHighlight();
   }
 
   // 選択肢をタップした時点でそのまま解答として確定し、即座に正誤判定する。
@@ -973,7 +1017,7 @@
     }
   });
 
-  // 十字キー(↑↓)で選択肢を移動、Enterで確定。解答済みなら続けてEnterで次へ進む。
+  // 十字キーで選択肢/もう一度再生・続きから再生を移動、Enterで確定。
   document.addEventListener("keydown", (e) => {
     if (!$("screen-game").classList.contains("is-active")) return;
 
@@ -987,12 +1031,33 @@
       moveChoiceSelection(-1);
       return;
     }
+    if (e.key === "ArrowRight") {
+      if (!focusedActionBtn) return;
+      e.preventDefault();
+      moveActionBtnSelection(1);
+      return;
+    }
+    if (e.key === "ArrowLeft") {
+      if (!focusedActionBtn) return;
+      e.preventDefault();
+      moveActionBtnSelection(-1);
+      return;
+    }
     if (e.key !== "Enter") return;
 
-    const nextBtn = $("answer-next");
-    if (!nextBtn.classList.contains("hidden") && !nextBtn.disabled) {
+    // Enterは今キーボードでフォーカスしているものを確定する。もう一度再生/
+    // 続きから再生にいる場合はそちらを優先し、それ以外(選択肢を選んでいる/
+    // 何も選んでいない)の場合だけ次へにフォールバックする。
+    if (focusedActionBtn === "replay") {
       e.preventDefault();
-      nextBtn.click();
+      const btn = $("replay-btn");
+      if (!btn.disabled) btn.click();
+      return;
+    }
+    if (focusedActionBtn === "skip") {
+      e.preventDefault();
+      const btn = $("skip-ahead-btn");
+      if (!btn.disabled) btn.click();
       return;
     }
 
@@ -1001,6 +1066,13 @@
     if (chosen && !chosen.disabled) {
       e.preventDefault();
       chosen.click();
+      return;
+    }
+
+    const nextBtn = $("answer-next");
+    if (!nextBtn.classList.contains("hidden")) {
+      e.preventDefault();
+      nextBtn.click();
     }
   });
 

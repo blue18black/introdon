@@ -48,7 +48,6 @@ _TRAILING_VARIANT_RE = re.compile(
     r"\s+(?:[a-z0-9.\-']+\s+)*(remix|re-mix|mix|version|ver\.?|remaster(?:ed)?|type\s*\d*)\s*$",
     re.IGNORECASE,
 )
-_SPACE_HYPHEN_RE = re.compile(r"\s-")
 _BRACKET_RE = re.compile(r"[\(\[（【]")
 _PAIRED_HYPHEN_RE = re.compile(r"-[^-]+-")
 
@@ -58,6 +57,16 @@ def is_instrumental(title: str) -> bool:
     return any(k.lower() in t for k in INSTRUMENTAL_KEYWORDS)
 
 
+_LIVE_TITLE_RE = re.compile(r"live|ライブ", re.IGNORECASE)
+
+
+def is_live_recording(title: str) -> bool:
+    """曲名自体に"live"/"ライブ"のような言葉が含まれるかを見る(アルバム名では
+    なく曲名を見る。アルバム名が「REVENGE LIVE」でも曲名自体は普通のことがあり、
+    それだけでは除外しない)。"""
+    return bool(_LIVE_TITLE_RE.search(title))
+
+
 def clean_title(title: str) -> str:
     """"日本語タイトル - Romanized Title" のように付与される冗長なローマ字表記を除去する。
     " - "で区切り、非ASCII文字を含む部分(=まだ本来のタイトルの続き)が続く限り残し、
@@ -65,6 +74,12 @@ def clean_title(title: str) -> str:
     """
     parts = [p for p in title.split(" - ") if p.strip()]
     if not parts:
+        return title.strip()
+    # 最初の部分が既に純ASCIIなら、そもそも「日本語タイトル - ローマ字重複表記」の
+    # パターンではない(例:「ARASHI - Turning Up [Official Music Video]」は
+    # アーティスト名も曲名も元から英語表記なだけで、後半はローマ字の重複表記では
+    # ない)。誤って曲名ごと切り捨ててしまわないよう、その場合は何もしない。
+    if not any(ord(ch) > 127 for ch in parts[0]):
         return title.strip()
     kept = [parts[0]]
     for part in parts[1:]:
@@ -76,11 +91,18 @@ def clean_title(title: str) -> str:
 
 
 def normalize_title(title: str) -> str:
-    """重複検出用の正規化キー(小文字化・記号除去など)。"""
-    t = title.lower()
+    """重複検出用の正規化キー(小文字化・記号除去など)。
+    以前は単純に最初の" -"より前だけを残していたが、これだと「ARASHI - カイト
+    [Official Music Video]」のような"アーティスト名 - 曲名"形式のタイトルで
+    アーティスト名(「arashi」)だけが残り、同じアーティストの別の曲すべてが
+    同一キーに衝突して大量に誤って重複除去されてしまう不具合があった
+    (" - "を「日本語タイトル - ローマ字重複表記」の区切りとしか想定していなかった
+    ため)。clean_title()の、非ASCII文字を含む部分は本来のタイトルの続きとみなして
+    残す、というより安全なロジックを使う。"""
+    t = clean_title(title)
+    t = t.lower()
     t = re.sub(r"[\(\[（【].*?[\)\]）】]", "", t)
     t = re.sub(r"feat\.?.*", "", t)
-    t = _SPACE_HYPHEN_RE.split(t, maxsplit=1)[0]
     t = _TRAILING_VARIANT_RE.sub("", t)
     t = re.sub(r"[^\w\s]", "", t)
     t = re.sub(r"\s+", " ", t).strip()
@@ -89,9 +111,9 @@ def normalize_title(title: str) -> str:
 
 def strip_variant_for_display(title: str) -> str:
     """normalize_titleと同じ除去ルールだが、大文字/記号は保持して表示用に整形する。"""
-    t = re.sub(r"[\(\[（【].*?[\)\]）】]", "", title)
+    t = clean_title(title)
+    t = re.sub(r"[\(\[（【].*?[\)\]）】]", "", t)
     t = re.sub(r"feat\.?.*", "", t, flags=re.IGNORECASE)
-    t = _SPACE_HYPHEN_RE.split(t, maxsplit=1)[0]
     t = _TRAILING_VARIANT_RE.sub("", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t or title.strip()
@@ -632,18 +654,100 @@ def fetch_all_tracks(artist_id):
     return raw_tracks
 
 
-def _fetch_view_count(video_id):
+def _fetch_song_details(video_id):
+    """view_countとlengthSecondsをまとめて1回のget_song()で取得する
+    (再生回数ランキングと、カタログの申告時間との不整合チェックの両方で使う)。"""
     try:
         details = _yt.get_song(video_id).get("videoDetails") or {}
-        return int(details.get("viewCount") or 0)
+        view_count = int(details.get("viewCount") or 0)
+        length_raw = details.get("lengthSeconds")
+        length_seconds = int(length_raw) if length_raw else None
+        return view_count, length_seconds
     except Exception:
-        return 0
+        return 0, None
+
+
+_DURATION_MISMATCH_THRESHOLD = 20  # 秒。これ以上ズレていたらカタログの動画紐付けが壊れているとみなす
+
+
+def _is_duration_mismatched(declared_seconds, actual_seconds):
+    return bool(
+        actual_seconds is not None
+        and declared_seconds
+        and abs(actual_seconds - declared_seconds) > _DURATION_MISMATCH_THRESHOLD
+    )
+
+
+def _duration_str_to_seconds(s):
+    if not s:
+        return None
+    try:
+        parts = [int(p) for p in s.split(":")]
+    except ValueError:
+        return None
+    seconds = 0
+    for p in parts:
+        seconds = seconds * 60 + p
+    return seconds
+
+
+def _find_studio_alternative(artist_name, track):
+    """ライブ音源判定/カタログの申告時間との不整合で除外対象になった曲について、
+    除外する前に同じ曲の別バージョン(スタジオ版など)が無いか直接検索して探す。
+    見つかればそちらの情報(videoId/タイトル/再生時間/再生回数)を積んで返し、
+    見つからなければNoneを返す(呼び出し側で除外する)。"""
+    raw_title = track.get("title", "")
+    title_key = normalize_title(raw_title)
+    if not title_key:
+        return None
+    query_title = strip_variant_for_display(clean_title(raw_title))
+    query = f"{artist_name} {query_title}".strip()
+    try:
+        results = _yt_ja.search(query, filter="songs", limit=10)
+    except Exception:
+        results = []
+    for r in results:
+        vid = r.get("videoId")
+        if not vid or vid == track.get("videoId"):
+            continue
+        cand_title = r.get("title") or ""
+        if normalize_title(cand_title) != title_key or is_live_recording(cand_title):
+            continue
+        view_count, actual_len = _fetch_song_details(vid)
+        declared = _duration_str_to_seconds(r.get("duration")) or actual_len
+        if _is_duration_mismatched(declared, actual_len):
+            continue
+        new_track = dict(track)
+        new_track["videoId"] = vid
+        new_track["title"] = cand_title
+        if declared:
+            new_track["duration_seconds"] = declared
+        return new_track, view_count, actual_len
+    return None
+
+
+def _resolve_track_quality(artist_name, track):
+    """ライブ音源(曲名にlive/ライブ等を含む)や、カタログの申告時間と実際の動画の
+    長さが大きくズレている(データ不整合で別テイクに紐付いている)曲を検出し、
+    除外する前にスタジオ版などの代わりを検索して差し替えを試みる。
+    戻り値は (曲, 再生回数) のタプルで、除外する場合は (None, 0)。"""
+    view_count, actual_len = _fetch_song_details(track.get("videoId"))
+    flagged = is_live_recording(track.get("title", "")) or _is_duration_mismatched(
+        track.get("duration_seconds"), actual_len
+    )
+    if not flagged:
+        return track, view_count
+    alt = _find_studio_alternative(artist_name, track)
+    if not alt:
+        return None, 0
+    new_track, alt_view_count, _ = alt
+    return new_track, alt_view_count
 
 
 _ARTIST_RANKED_CACHE = {}
 
 
-def fetch_ranked_tracks(artist_id):
+def fetch_ranked_tracks(artist_id, artist_name):
     """Top25/Top50用のランキング。YouTube Music公式の「人気の曲」プレイリストは
     使わず、全曲(fetch_all_tracks)について曲ごとに再生回数を取得し、
     その再生回数の多い順に独自にランキングする。
@@ -653,22 +757,31 @@ def fetch_ranked_tracks(artist_id):
     ではなく、実際の再生回数が高い方を勝者(=ランキング算出に採用する動画)として残す。
     ただし表示するタイトルは勝者の実タイトルではなく、strip_variant_for_displayで
     整形したプレーンタイトルにする(例: 「仮契約のシンデレラ（ショートバージョン）」が
-    勝者でも、表示上は「仮契約のシンデレラ」にする)。"""
+    勝者でも、表示上は「仮契約のシンデレラ」にする)。
+
+    曲名にlive/ライブを含む曲や、カタログの申告時間と実際の動画の長さが大きく
+    ズレている曲(データ不整合)は、_resolve_track_qualityでスタジオ版などの
+    代わりへの差し替えを試み、見つからなければ除外する。"""
     if artist_id in _ARTIST_RANKED_CACHE:
         return _ARTIST_RANKED_CACHE[artist_id]
 
     raw = [t for t in fetch_all_tracks(artist_id) if t.get("videoId") and t.get("title")]
     raw = filter_instrumental(raw)
-    tracks = []
+    candidates = []
     for t in raw:
         t = dict(t)
         t["title"] = clean_title(t["title"])
-        tracks.append(t)
+        candidates.append(t)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        view_counts = list(pool.map(_fetch_view_count, [t["videoId"] for t in tracks]))
-    for t, vc in zip(tracks, view_counts):
-        t["_viewCount"] = vc
+        resolved = list(pool.map(lambda t: _resolve_track_quality(artist_name, t), candidates))
+
+    tracks = []
+    for new_track, view_count in resolved:
+        if new_track is None:
+            continue
+        new_track["_viewCount"] = view_count
+        tracks.append(new_track)
 
     groups = defaultdict(list)
     for t in tracks:
@@ -692,6 +805,36 @@ def fetch_ranked_tracks(artist_id):
     ranked = sorted(deduped, key=lambda t: t["_viewCount"], reverse=True)
     _ARTIST_RANKED_CACHE[artist_id] = ranked
     return ranked
+
+
+def _resolve_all_tracks_quality(tracks, artist_name):
+    """全曲モード用。ライブ音源(曲名にlive/ライブ等を含む)や、カタログの申告時間と
+    実際の動画の長さが大きくズレている曲を検出し、除外する前にスタジオ版などの
+    代わりを検索して差し替えを試みる(fetch_ranked_tracks内のロジックと同様)。"""
+    def resolve_one(t):
+        _, actual_len = _fetch_song_details(t.get("videoId"))
+        flagged = is_live_recording(t.get("title", "")) or _is_duration_mismatched(
+            t.get("duration_seconds"), actual_len
+        )
+        if not flagged:
+            return t
+        alt = _find_studio_alternative(artist_name, t)
+        if not alt:
+            return None
+        new_track, _, _ = alt
+        return new_track
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        resolved = list(pool.map(resolve_one, tracks))
+
+    seen_ids = set()
+    result = []
+    for t in resolved:
+        if not t or t["videoId"] in seen_ids:
+            continue
+        seen_ids.add(t["videoId"])
+        result.append(t)
+    return result
 
 
 _ARTIST_VIDEO_CACHE = {}
@@ -749,7 +892,7 @@ def get_artist_tracks(artist_name, scope="all"):
     canonical_name, artist_id = target
 
     if scope in ("top25", "top50"):
-        ranked = fetch_ranked_tracks(artist_id)  # 全曲を重複解決済み・再生回数降順
+        ranked = fetch_ranked_tracks(artist_id, canonical_name)  # 全曲を重複解決済み・再生回数降順
         nominal = 25 if scope == "top25" else 50
         tracks = _filter_embeddable(ranked[:nominal])
         if len(tracks) < nominal:
@@ -765,7 +908,8 @@ def get_artist_tracks(artist_name, scope="all"):
     else:
         # fetch_all_tracks自体がアルバム/シングル未登録の動画限定曲も含めて
         # 返すため、ここで別途動画セクションへフォールバックする必要はない。
-        tracks = _filter_embeddable(_clean_and_dedupe(fetch_all_tracks(artist_id)))
+        tracks = _resolve_all_tracks_quality(_clean_and_dedupe(fetch_all_tracks(artist_id)), canonical_name)
+        tracks = _filter_embeddable(tracks)
 
     quiz_tracks = []
     for raw in tracks:

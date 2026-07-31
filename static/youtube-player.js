@@ -71,6 +71,9 @@ const YTPlayers = (() => {
       let started = false;
       let retried = false;
       let timeoutId = null;
+      let confirmTimer = null;
+      let confirmChecks = 0;
+      let confirmLastTime = null;
       // playSecondsの計測は「実際にPLAYING状態だった時間の合計」で行う。
       // 再生開始後に回線都合等で一瞬BUFFERINGへ戻ることがあり、以前は最初の
       // PLAYINGから壁時計時間で一度きり計測していたため、その無音の間も
@@ -106,15 +109,53 @@ const YTPlayers = (() => {
         resumeTimer();
       };
 
+      const clearConfirm = () => {
+        if (confirmTimer) {
+          clearInterval(confirmTimer);
+          confirmTimer = null;
+        }
+      };
+
+      // PLAYING状態は、実際に音が聞こえ始めるより一瞬早く報告されることがある
+      // (カウントダウンは始まっているのにまだ無音、という体感のズレの原因)。
+      // 最初の開始判定だけは、getCurrentTime()が実際に進み始めたことを短時間
+      // 確認してからbegin()する。反応がなくても最大600ms(6回×100ms)で
+      // 諦めて開始扱いにするので、これ以上待たされることはない。
+      const confirmReallyPlaying = () => {
+        if (settled || started || confirmTimer) return;
+        confirmChecks = 0;
+        confirmLastTime = null;
+        confirmTimer = setInterval(() => {
+          confirmChecks++;
+          let t = null;
+          try { t = player.getCurrentTime(); } catch (e) { /* noop */ }
+          const advancing = t != null && confirmLastTime != null && t > confirmLastTime + 0.05;
+          if (advancing || confirmChecks >= 6) {
+            clearConfirm();
+            begin();
+            return;
+          }
+          confirmLastTime = t;
+        }, 100);
+      };
+
       const onStateChange = (e) => {
         if (e.data === YT.PlayerState.PLAYING) {
-          begin();
+          if (started) {
+            resumeTimer();
+          } else {
+            confirmReallyPlaying();
+          }
         } else if (e.data === YT.PlayerState.ENDED) {
+          clearConfirm();
           finish();
         } else if (started) {
           // BUFFERING/PAUSEDなどで音が止まっている間は、その分を持ち時間から
           // 差し引かないようタイマーを一時停止する。
           pauseTimer();
+        } else {
+          // まだ本当の開始判定中にBUFFERING等へ戻った場合は確認をリセットする。
+          clearConfirm();
         }
       };
       const onError = () => {
@@ -132,6 +173,7 @@ const YTPlayers = (() => {
       };
       const cleanup = () => {
         if (timeoutId) clearTimeout(timeoutId);
+        clearConfirm();
         player.removeEventListener("onStateChange", onStateChange);
         player.removeEventListener("onError", onError);
         if (activeCancel[playerIndex] === cancel) activeCancel[playerIndex] = null;
@@ -141,6 +183,7 @@ const YTPlayers = (() => {
       const cancel = () => {
         settled = true;
         if (timeoutId) clearTimeout(timeoutId);
+        clearConfirm();
         player.removeEventListener("onStateChange", onStateChange);
         player.removeEventListener("onError", onError);
       };
