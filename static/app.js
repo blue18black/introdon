@@ -277,7 +277,7 @@
     hideSuggestions();
     artistInput.focus();
     if (State.selectedArtists.some((a) => a.name === name)) return;
-    State.selectedArtists.push({ name, scope: "top25" });
+    State.selectedArtists.push({ name, scope: "mix" });
     renderArtistEntries();
     refreshArtistPool();
   }
@@ -925,17 +925,33 @@
   function updateActionBtnHighlight() {
     $("replay-btn").classList.toggle("keyboard-selected", focusedActionBtn === "replay");
     $("skip-ahead-btn").classList.toggle("keyboard-selected", focusedActionBtn === "skip");
+    $("answer-next").classList.toggle("keyboard-selected", focusedActionBtn === "next");
   }
 
-  // 選択肢の並びともう一度再生/続きから再生のボタン行を、ひとつながりの
+  // 選択肢の並び/もう一度再生・続きから再生/次への間を、ひとつながりの
   // 環状リストとして扱う: 最後の選択肢から下へ行くとボタン行(もう一度再生)へ、
   // ボタン行から下へ行くと先頭の選択肢へ戻る(上はその逆順)。解答済みで選択肢が
   // 選べない状態でも、もう一度再生/続きから再生へは移動できるようにする。
+  // 解答済みで次へが表示されている場合は、もう一度再生/続きから再生から下で
+  // 次へへ移動でき、次への上下はどちらももう一度再生に戻る。
   function moveChoiceSelection(delta) {
     const items = Array.from($("answer-choices").children);
     if (items.length === 0) return;
+    const nextBtn = $("answer-next");
+    const nextVisible = !nextBtn.classList.contains("hidden");
+
+    if (focusedActionBtn === "next") {
+      focusedActionBtn = "replay";
+      updateActionBtnHighlight();
+      return;
+    }
 
     if (focusedActionBtn) {
+      if (delta > 0 && nextVisible) {
+        focusedActionBtn = "next";
+        updateActionBtnHighlight();
+        return;
+      }
       focusedActionBtn = null;
       selectedChoiceIndex = delta > 0 ? 0 : items.length - 1;
       updateChoiceHighlight();
@@ -963,9 +979,9 @@
     updateChoiceHighlight();
   }
 
-  // もう一度再生⇄続きから再生の間の左右移動。
+  // もう一度再生⇄続きから再生の間の左右移動。次へにいる時は対象外。
   function moveActionBtnSelection(delta) {
-    if (!focusedActionBtn) return;
+    if (focusedActionBtn !== "replay" && focusedActionBtn !== "skip") return;
     focusedActionBtn = delta > 0 ? "skip" : "replay";
     updateActionBtnHighlight();
   }

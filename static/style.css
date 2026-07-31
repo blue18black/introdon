@@ -68,7 +68,7 @@ input {
   inset: 0;
   display: none;
   flex-direction: column;
-  padding: 18px 20px;
+  padding: 14px 20px;
 }
 
 #screen-home, #screen-game {
@@ -528,16 +528,16 @@ input {
   /* 選択肢(answer-area)の表示/非表示で高さが変わっても、この中の丸いビジュアルの
      位置がずれないよう、伸縮させず固定の高さにしておく。 */
   flex: 0 0 auto;
-  height: min(190px, 27vh);
+  height: min(160px, 22vh);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .player-visual {
-  width: min(120px, 30vw);
+  width: min(104px, 26vw);
   aspect-ratio: 1 / 1;
   border-radius: 50%;
   background: var(--ink);
@@ -623,20 +623,20 @@ input {
   flex: 0 0 auto;
   display: none;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 .answer-area.is-active { display: flex; }
 
 .answer-choices {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 .choice-btn {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 10px 16px;
+  padding: 8px 14px;
   border-radius: 12px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -668,7 +668,7 @@ input {
 .answer-actions {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .answer-actions-secondary {
@@ -678,7 +678,7 @@ input {
 
 .btn-replay {
   flex: 1 1 0;
-  padding: 12px 10px;
+  padding: 10px 10px;
   border-radius: 12px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -703,7 +703,7 @@ input {
 
 .btn-next {
   flex: 1 1 auto;
-  padding: 13px;
+  padding: 11px;
   border-radius: 12px;
   background: var(--ink);
   color: #fff;
@@ -715,6 +715,7 @@ input {
 }
 .btn-next:active { transform: translateY(1px); box-shadow: 0 3px 8px rgba(28, 27, 41, 0.16); }
 .btn-next:disabled { opacity: 0.35; box-shadow: none; pointer-events: none; }
+.btn-next.keyboard-selected { box-shadow: 0 0 0 2px var(--primary); }
 /* 解答前は「次へ」ボタンのぶんのスペースを空けておかず、出現した瞬間に
    ページ全体の高さが増えてスクロールが必要になっていた。表示/非表示を
    display:noneではなくvisibilityで切り替え、常に同じ高さを確保しておく
