@@ -122,20 +122,29 @@ const Quiz = (() => {
       // 現在の問題の曲が再生できなかった場合に、別の曲へ静かに差し替える。
       // excludeVideoIds: 候補から除外するvideoId(再生できないと分かっている曲など)。
       // 差し替え先が見つかればtrue、pool内に候補が残っていなければfalseを返す。
+      //
+      // 以前は「他の問題と重複しない候補が尽きたら、重複を許容してどれでも選ぶ」
+      // フォールバックだったが、これだと再生できる曲が少ないプールで特定の1曲
+      // (たまたま再生できた曲)に選択が集中し、同じ曲が何度も出題されてしまう
+      // 不具合があった。再生できない曲(excludeVideoIds)だけは絶対に避けた上で、
+      // 「他の問題で使われている回数が最も少ない曲」を選ぶことで、やむを得ず
+      // 重複する場合でも特定の1曲に偏らず均等に分散するようにする。
       replaceCurrentTrack(excludeVideoIds = []) {
-        const excluded = new Set(excludeVideoIds);
-        // 差し替え先が、ゲーム内の他の問題で既に使われている曲と重複しないようにする。
+        const broken = new Set(excludeVideoIds);
+        const nonBroken = pool.filter((t) => !broken.has(t.videoId));
+        if (nonBroken.length === 0) return false;
+
+        const usageCount = new Map();
         questions.forEach((q, i) => {
           if (i === this.currentIndex) return;
-          q.tracks.forEach((t) => excluded.add(t.videoId));
+          q.tracks.forEach((t) => {
+            usageCount.set(t.videoId, (usageCount.get(t.videoId) || 0) + 1);
+          });
         });
-        let candidates = pool.filter((t) => !excluded.has(t.videoId));
-        if (candidates.length === 0) {
-          // 重複回避を優先しすぎて候補が尽きた場合は、再生できない曲を避けることを
-          // 優先し、他の問題との重複は許容する。
-          candidates = pool.filter((t) => !new Set(excludeVideoIds).has(t.videoId));
-        }
-        if (candidates.length === 0) return false;
+
+        const minUsage = Math.min(...nonBroken.map((t) => usageCount.get(t.videoId) || 0));
+        const candidates = nonBroken.filter((t) => (usageCount.get(t.videoId) || 0) === minUsage);
+
         const newTrack = candidates[Math.floor(Math.random() * candidates.length)];
         const numChoices = Math.min(pool.length, tracksPerQuestion * 2 + 2);
         questions[this.currentIndex] = {

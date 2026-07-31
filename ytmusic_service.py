@@ -345,34 +345,43 @@ def _dedupe_playlist_tracks(tracks):
     return deduped
 
 
-_PLAYLIST_ARTIST_NAME_CACHE = {}
+_SYMBOL_ONLY_DIFF_RE = re.compile(r"[^\w]", re.UNICODE)
 
 
-def _canonical_display_artist(raw_name):
-    """プレイリストの曲に付いている生のアーティスト表記(「ときめき宣伝部」
-    「ときめき♡宣伝部」のように同じアーティストでも表記ゆれがある)を、
-    表示用に正式名称へ寄せる。曲の中身(videoId)には一切触れず表示名だけ
-    差し替えるので、「プレイリストの曲をそのまま使う」方針とは矛盾しない。
-    解決できなければ元の表記のまま返す。"""
-    if not raw_name:
-        return raw_name
-    if raw_name in _PLAYLIST_ARTIST_NAME_CACHE:
-        return _PLAYLIST_ARTIST_NAME_CACHE[raw_name]
-    try:
-        target = find_target_artist(raw_name)
-    except Exception:
-        target = None
-    resolved = target[0] if target else raw_name
-    _PLAYLIST_ARTIST_NAME_CACHE[raw_name] = resolved
-    return resolved
+def _normalize_artist_symbol_variants(tracks):
+    """プレイリストの曲についているアーティスト名の表記ゆれのうち、記号の
+    有無だけの違い(例:「ときめき宣伝部」と「ときめき♡宣伝部」)だけを統一する。
+    改名前後のように文字そのものが違う表記(例:「ときめき♡宣伝部」→「超ときめき
+    ♡宣伝部」)は別のアーティスト名として区別したままにする(曲がリリースされた
+    当時の名義を尊重するため)。曲の中身(videoId)には一切触れない。
+    find_target_artist()のようなアーティスト解決は行わない(ネットワーク不要で、
+    改名を「同一アーティストへの統合」に潰してしまう問題も起きない)。"""
+    variants_by_key = defaultdict(list)
+    for t in tracks:
+        name = t.get("artist") or ""
+        if not name:
+            continue
+        key = _SYMBOL_ONLY_DIFF_RE.sub("", name).lower()
+        variants_by_key[key].append(name)
+
+    # 記号が付いている方(情報量が多い方)を代表表記として選ぶ。
+    canonical_by_key = {key: max(names, key=len) for key, names in variants_by_key.items()}
+
+    for t in tracks:
+        name = t.get("artist") or ""
+        if not name:
+            continue
+        key = _SYMBOL_ONLY_DIFF_RE.sub("", name).lower()
+        t["artist"] = canonical_by_key[key]
+    return tracks
 
 
 def get_playlist_tracks(url_or_id):
     """YouTube Music/YouTubeのプレイリストのURL(またはID)から曲一覧を取得する。
     見つからない場合はNoneを返す。プレイリストに実際に入っている曲をそのまま
     使う(表記ゆれ重複解決による差し替えはしない。完全一致の重複除去と、
-    埋め込み再生できない動画の除外だけ行う)。アーティスト名の表示だけは
-    表記ゆれを解決して統一する。"""
+    埋め込み再生できない動画の除外だけ行う)。アーティスト名の表示は、記号の
+    有無だけの表記ゆれだけを統一する(改名前後の別名義はそのまま区別する)。"""
     playlist_id = _extract_playlist_id(url_or_id)
     if not playlist_id:
         return None
@@ -388,8 +397,8 @@ def get_playlist_tracks(url_or_id):
     for raw in raw_tracks:
         qt = _to_quiz_track(raw)
         if qt:
-            qt["artist"] = _canonical_display_artist(qt["artist"])
             tracks.append(qt)
+    tracks = _normalize_artist_symbol_variants(tracks)
 
     return {"playlistTitle": playlist.get("title") or "プレイリスト", "tracks": tracks}
 
