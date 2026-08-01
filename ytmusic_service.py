@@ -450,72 +450,31 @@ def _gather_alternative_candidates(artist_name, track, exclude_video_id=None, se
     return catalog_candidates + [c for _, c in search_candidates]
 
 
-_ALTERNATIVE_CANDIDATE_LIMIT = 4
-
-
-def _find_alternative_track(track, exclude_video_id=None, search_filters=("songs", "videos")):
-    """_gather_alternative_candidatesの候補(優先度順、最大_ALTERNATIVE_CANDIDATE_LIMIT件)
-    について、実際にこの環境から埋め込み再生できる(_is_embeddable)かを
-    まとめて並列確認し、優先度が最も高い(候補リストの先頭に近い)採用可能な
-    ものを使う。地域制限等で先頭の候補が軒並み配信不可な場合、1件ずつ順番に
-    確認していると時間がかかりすぎ、Render側のゲートウェイタイムアウト(約30秒)
-    を超えて502になってしまうことがあったため、並列化して待ち時間を縮める。
-    見つからなければNoneを返す(呼び出し側で諦める)。"""
-    artist_name = _primary_artist_name(track.get("artists"))
-    candidates = _gather_alternative_candidates(
-        artist_name, track, exclude_video_id, search_filters=search_filters
-    )[:_ALTERNATIVE_CANDIDATE_LIMIT]
-    if not candidates:
-        return None
-
-    with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
-        ok_flags = list(pool.map(lambda c: _is_embeddable(c["videoId"]), candidates))
-
-    for c, ok in zip(candidates, ok_flags):
-        if not ok:
-            continue
-        new_track = dict(track)
-        new_track["videoId"] = c["videoId"]
-        new_track["title"] = strip_variant_for_display(clean_title(c["title"]))
-        if c.get("duration_seconds"):
-            new_track["duration_seconds"] = c["duration_seconds"]
-        return new_track
-    return None
-
-
 def _recover_missing_playlist_track(track):
     """プレイリストのAPI応答では、ストリーミング配信カタログに無い曲(アニメ
     タイアップ盤限定曲、Less Vocal版など)や、サーバーの設置地域では配信
     ライセンスが無い曲がisAvailable=falseとなりvideoId自体が欠落することが
     ある(「読み込めたはずの曲が半分以上取得できない」の主因)。実際には動画
-    自体はYouTube上に存在することが多いため、別バージョンを探して補う。
-    見つからなければその曲は諦める(欠落したままにする方が、無関係な曲に
-    化けさせるより安全)。"""
-    return _find_alternative_track(track)
-
-
-def _filter_embeddable_with_fallback(tracks):
-    """埋め込み再生できない曲(サーバー設置地域のライセンス制限など)は、
-    即座に除外せず、まず同じ曲の別バージョンへの差し替えを試みる
-    (_find_alternative_track、埋め込み確認済みのものしか採用しない)。
-    それでも見つからない場合だけ除外する。"""
-    if not tracks:
-        return tracks
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(lambda t: _is_embeddable(t["videoId"]), tracks))
-    ok_tracks = [t for t, ok in zip(tracks, results) if ok]
-    failed_tracks = [t for t, ok in zip(tracks, results) if not ok]
-    if failed_tracks:
-        # 既にvideoIdがある曲の差し替えは、カタログ+songs検索だけで十分実用的
-        # なことが多く、"videos"(UGC)検索まで含めると時間がかかりすぎるため
-        # 省略する(Render側のゲートウェイタイムアウト対策)。
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            alternatives = list(pool.map(
-                lambda t: _find_alternative_track(t, exclude_video_id=t["videoId"], search_filters=("songs",)),
-                failed_tracks,
-            ))
-        ok_tracks.extend(t for t in alternatives if t)
-    return ok_tracks
+    自体はYouTube上に存在することが多いため、曲名・申告時間・アーティストが
+    一致する別バージョン(_gather_alternative_candidates、優先度順)を探して
+    補う。埋め込み確認はあえてしない――サーバー設置地域からの判定は実際の
+    視聴者の地域と一致するとは限らないうえ、確認の通信を積み重ねると
+    Render側のタイムアウト(約30秒、gunicorn側の設定を伸ばしても超えてしまう
+    ため、これより処理を軽くする方針にした)を超えてしまう。本当に再生
+    できない曲があっても、クイズ側の「再生できなければ静かに別の曲へ
+    差し替える」仕組み(実際の視聴者の環境で判定するため、より正確)が
+    最終的な保険になる。見つからなければその曲は諦める。"""
+    artist_name = _primary_artist_name(track.get("artists"))
+    candidates = _gather_alternative_candidates(artist_name, track)
+    if not candidates:
+        return None
+    c = candidates[0]
+    new_track = dict(track)
+    new_track["videoId"] = c["videoId"]
+    new_track["title"] = strip_variant_for_display(clean_title(c["title"]))
+    if c.get("duration_seconds"):
+        new_track["duration_seconds"] = c["duration_seconds"]
+    return new_track
 
 
 _SYMBOL_ONLY_DIFF_RE = re.compile(r"[^\w]", re.UNICODE)
@@ -553,14 +512,18 @@ def get_playlist_tracks(url_or_id):
     """YouTube Music/YouTubeのプレイリストのURL(またはID)から曲一覧を取得する。
     見つからない場合はNoneを返す。プレイリストに実際に入っている曲をそのまま
     使う(表記ゆれによる「好みのバージョンへの差し替え」はしない。完全一致の
-    重複除去と、埋め込み再生できない動画の除外だけ行う)。ただし埋め込み再生
-    できない曲(サーバー設置地域のライセンス制限など、地域を問わず本当に
-    配信されていない曲ではない)は、除外する前に同じ曲の別バージョン
-    (シングル/アルバムの別収録など、ライブ音源は対象外)を探して差し替える
-    (_filter_embeddable_with_fallback)。アーティスト名の表示は、記号の有無
-    だけの表記ゆれだけを統一する(改名前後の別名義はそのまま区別する)。
-    ストリーミング配信カタログに無くvideoIdが欠落している曲は、_recover_missing_playlist_track
-    で動画を探して補う(そのままでは大量の曲が丸ごと欠落してしまうため)。"""
+    重複除去だけ行う)。埋め込み再生できるかどうかの事前確認はあえてしない
+    ――サーバーの設置地域(Render/シンガポール)からの判定は、実際の視聴者の
+    地域と一致するとは限らず(地域ライセンスで見え方が変わる)、判定のための
+    通信を大量の曲に対して積み重ねるとRender側のタイムアウト(gunicorn側の
+    設定を伸ばしても超えてしまう、Render自体の上限とみられる)に引っかかって
+    プレイリスト全体の取得が失敗してしまっていた。本当に再生できない曲は、
+    クイズ側の「再生できなければ静かに別の曲へ差し替える」仕組み(実際の
+    視聴者の環境で判定するため、こちらの方が正確)が最終的な保険になる。
+    アーティスト名の表示は、記号の有無だけの表記ゆれだけを統一する
+    (改名前後の別名義はそのまま区別する)。ストリーミング配信カタログに無く
+    videoIdが欠落している曲は、_recover_missing_playlist_trackで動画を探して
+    補う(そのままでは大量の曲が丸ごと欠落してしまうため)。"""
     playlist_id = _extract_playlist_id(url_or_id)
     if not playlist_id:
         return None
@@ -579,7 +542,6 @@ def get_playlist_tracks(url_or_id):
         have_vid.extend(t for t in recovered if t)
 
     raw_tracks = _dedupe_playlist_tracks(have_vid)
-    raw_tracks = _filter_embeddable_with_fallback(raw_tracks)
 
     tracks = []
     for raw in raw_tracks:
