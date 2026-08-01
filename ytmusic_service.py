@@ -387,6 +387,7 @@ def _gather_alternative_candidates(artist_name, track, exclude_video_id=None, se
     target = _resolve_artist_id_cached(artist_name)
     if target:
         _, artist_id = target
+        catalog_matches = []
         for t in fetch_all_tracks(artist_id):
             vid = t.get("videoId")
             cand_title_raw = t.get("title") or ""
@@ -396,13 +397,28 @@ def _gather_alternative_candidates(artist_name, track, exclude_video_id=None, se
                 continue
             if not target_is_live and is_live_recording(cand_title_raw):
                 continue
+            # normalize_titleはカッコ書きを除去するため、これだけでは
+            # 「(Less Vocal)」や「(〇〇ver.)」違いの別バージョンと衝突して
+            # しまう(取り違えの実例があった)。曲名側にバージョン語があれば
+            # 候補タイトルにも同じ語が無いと不採用、無ければ逆に候補側にだけ
+            # 既知のバージョン語が付いているものは不採用にする(search側と同じ扱い)。
             if normalize_title(cand_title_raw) != target_core:
                 continue
+            cand_title_lower = cand_title_raw.lower()
+            if variant_keyword:
+                if variant_keyword not in cand_title_lower:
+                    continue
+            elif any(w in cand_title_lower for w in _KNOWN_VARIANT_WORDS):
+                continue
             seen_ids.add(vid)
-            catalog_candidates.append({
+            cand_duration = t.get("duration_seconds")
+            diff = abs(cand_duration - duration) if (duration and cand_duration) else 0
+            catalog_matches.append((diff, {
                 "videoId": vid, "title": cand_title_raw,
-                "duration_seconds": t.get("duration_seconds"),
-            })
+                "duration_seconds": cand_duration,
+            }))
+        catalog_matches.sort(key=lambda x: x[0])
+        catalog_candidates = [c for _, c in catalog_matches]
 
     query = f"{artist_name} {clean_title(title)}".strip()
 
