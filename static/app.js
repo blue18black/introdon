@@ -329,38 +329,13 @@
         loadingEl.appendChild(cancelBtn);
 
         li.appendChild(loadingEl);
-      } else if (cancelledArtistKeys.has(entryKey)) {
-        // 中断した後は何も表示されなくなり、再取得する手段が無かったため、
-        // 再開ボタンを出して同じ取得をもう一度試せるようにする。
-        const resumeEl = document.createElement("div");
-        resumeEl.className = "artist-entry-loading";
-        const resumeText = document.createElement("span");
-        resumeText.className = "artist-entry-loading-text";
-        resumeText.textContent = "取得を中断しました";
-        resumeEl.appendChild(resumeText);
-
-        const resumeBtn = document.createElement("button");
-        resumeBtn.type = "button";
-        resumeBtn.className = "artist-entry-loading-cancel";
-        resumeBtn.textContent = "再開";
-        resumeBtn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          resumeArtistFetch(entry);
-        });
-        resumeEl.appendChild(resumeBtn);
-
-        const deleteBtn = document.createElement("button");
-        deleteBtn.type = "button";
-        deleteBtn.className = "artist-entry-loading-cancel";
-        deleteBtn.textContent = "削除";
-        deleteBtn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          removeArtistEntry(entry);
-        });
-        resumeEl.appendChild(deleteBtn);
-
-        li.appendChild(resumeEl);
       }
+      // 中断済みでも特別な画面(再開/削除だけ)には固定せず、通常のアーティスト
+      // 行の表示(名前・確認・スコープ選択・×)をそのまま出す。以前は中断後に
+      // オーバーレイ(position:absolute; inset:0)がスコープボタンや×ボタンを
+      // 覆ってしまい、再開ボタン以外で操作できず、実質そのアーティストで
+      // 遊べなくなっていた不具合があった。再取得したい場合はスコープボタンを
+      // 押せば(下のクリックハンドラでcancelledArtistKeysを解除して)取得し直せる。
 
       const nameEl = document.createElement("div");
       nameEl.className = "artist-entry-name";
@@ -402,7 +377,12 @@
         btn.className = "mini-choice" + (entry.scope === opt.value ? " is-active" : "");
         btn.textContent = opt.label;
         btn.addEventListener("click", () => {
-          if (entry.scope === opt.value) return;
+          const wasCancelled = cancelledArtistKeys.has(`${entry.name}::${entry.scope}`);
+          // 同じスコープを押した場合も、中断状態からの取得し直し(明示的な
+          // 操作なので再開してよい)として扱う。スコープが変わらない限り
+          // 何も起きないままだと、中断済みで詰んだ状態から抜け出せないため。
+          if (entry.scope === opt.value && !wasCancelled) return;
+          cancelledArtistKeys.delete(`${entry.name}::${entry.scope}`);
           entry.scope = opt.value;
           renderArtistEntries();
           refreshArtistPool();
@@ -428,7 +408,7 @@
   }
 
   const artistFetchControllers = {}; // `${name}::${scope}` -> AbortController(中断ボタン用)
-  const cancelledArtistKeys = new Set(); // `${name}::${scope}` 中断済み(再開ボタンを出す)
+  const cancelledArtistKeys = new Set(); // `${name}::${scope}` 中断済み(明示的な操作があるまで自動では再取得しない)
 
   function removeArtistEntry(entry) {
     State.selectedArtists = State.selectedArtists.filter((a) => a.name !== entry.name);
@@ -446,18 +426,11 @@
     renderArtistEntries();
   }
 
-  function resumeArtistFetch(entry) {
-    const key = `${entry.name}::${entry.scope}`;
-    cancelledArtistKeys.delete(key);
-    renderArtistEntries();
-    refreshArtistPool();
-  }
-
   // 中断済みのアーティストは、他のアーティストを新たに追加/変更した時にも
   // refreshArtistPool()がまとめて全アーティストを再取得しようとする巻き添えで
-  // 勝手に取得が再開してしまっていた(「再開」ボタンを押していないのに読み込みが
-  // 始まる不具合)。明示的な再開(resumeArtistFetch、cancelledArtistKeysから
-  // 削除済み)を経ていない限り、ここで取得をスキップする。
+  // 勝手に取得が再開してしまっていた(明示的に再取得を選んでいないのに読み込みが
+  // 始まる不具合)。このアーティストのスコープボタンを押す等、明示的な操作で
+  // cancelledArtistKeysから削除されない限り、ここで取得をスキップする。
   async function fetchArtistPoolCached(name, scope) {
     const key = `${name}::${scope}`;
     if (State.artistTrackCache[key]) return State.artistTrackCache[key];
@@ -514,8 +487,8 @@
           }
         });
       } else if (!cancelledArtistKeys.has(`${entries[i].name}::${entries[i].scope}`)) {
-        // 中断済みでまだ再開していないアーティストは、失敗扱いにはしない
-        // (再開ボタンで自分から取得を始めるまでは黙って除外するだけでよい)。
+        // 中断済みでまだ取得し直していないアーティストは、失敗扱いにはしない
+        // (スコープボタンを押す等、自分から取得を始めるまでは黙って除外するだけでよい)。
         failCount++;
       }
     });
