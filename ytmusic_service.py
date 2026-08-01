@@ -345,6 +345,79 @@ def _dedupe_playlist_tracks(tracks):
     return deduped
 
 
+_BRACKET_CONTENT_RE = re.compile(r"[\(（]([^\)）]+)[\)）]")
+_KNOWN_VARIANT_WORDS = ("less vocal", "off vocal", "オフボーカル", "instrumental", "インスト", "カラオケ", "ver.", "version")
+
+
+def _find_video_for_missing_track(artist_name, track):
+    """曲名とプレイリスト側の申告時間が一致する動画を検索して見つける。
+    ストリーミングカタログに無い深い収録曲は「songs」検索でほぼヒットしない
+    ため「videos」検索(ファンアップロード含む)も試すが、UGC動画はタイトルの
+    表記ゆれが激しい一方、同じ音源の再アップロードなら実時間はほぼ一致する
+    ことが多いため、タイトルは部分一致、実時間は僅差(videos検索は±5秒、
+    songs検索は±20秒)を条件にする。ただし「(Less Vocal)」「(〇〇ver.)」の
+    ようなカッコ書きがある場合、そのキーワードが候補タイトルにも含まれて
+    いることを必須にする(無いと通常バージョンと取り違えてしまうため)。
+    元のタイトルにカッコ書きが無いのに候補側にだけ既知のバージョン語が
+    付いている場合も、逆に別バージョンとみなして除外する。"""
+    title = track.get("title", "")
+    duration = track.get("duration_seconds")
+    target_core = normalize_title(title)
+    if not target_core:
+        return None
+
+    bracket_match = _BRACKET_CONTENT_RE.search(title)
+    variant_keyword = bracket_match.group(1).strip().lower() if bracket_match else None
+
+    query = f"{artist_name} {clean_title(title)}".strip()
+    best = None
+    for filt in ("songs", "videos"):
+        try:
+            results = _yt_ja.search(query, filter=filt, limit=10)
+        except Exception:
+            results = []
+        threshold = _DURATION_MISMATCH_THRESHOLD if filt == "songs" else 5
+        for r in results:
+            vid = r.get("videoId")
+            cand_title_raw = r.get("title") or ""
+            if not vid or not cand_title_raw:
+                continue
+            cand_title_lower = cand_title_raw.lower()
+            if variant_keyword:
+                if variant_keyword not in cand_title_lower:
+                    continue
+            elif any(w in cand_title_lower for w in _KNOWN_VARIANT_WORDS):
+                continue
+            cand_core = normalize_title(cand_title_raw)
+            if target_core != cand_core and target_core not in cand_core:
+                continue
+            cand_duration = _duration_str_to_seconds(r.get("duration"))
+            if not duration or not cand_duration:
+                continue
+            diff = abs(cand_duration - duration)
+            if diff > threshold:
+                continue
+            if best is None or diff < best[0]:
+                best = (diff, vid)
+    return best[1] if best else None
+
+
+def _recover_missing_playlist_track(track):
+    """プレイリストのAPI応答では、ストリーミング配信カタログに無い曲(アニメ
+    タイアップ盤限定曲、Less Vocal版など)がisAvailable=falseとなりvideoId自体が
+    欠落することがある(「読み込めたはずの曲が半分以上取得できない」の主因)。
+    実際には動画自体はYouTube上に存在することが多いため、曲名(完全一致)と
+    申告時間が一致する動画を検索して補う。見つからなければその曲は諦める
+    (欠落したままにする方が、別バージョンに化けさせるより安全)。"""
+    artist_name = _primary_artist_name(track.get("artists"))
+    vid = _find_video_for_missing_track(artist_name, track)
+    if not vid:
+        return None
+    new_track = dict(track)
+    new_track["videoId"] = vid
+    return new_track
+
+
 _SYMBOL_ONLY_DIFF_RE = re.compile(r"[^\w]", re.UNICODE)
 
 
@@ -381,7 +454,9 @@ def get_playlist_tracks(url_or_id):
     見つからない場合はNoneを返す。プレイリストに実際に入っている曲をそのまま
     使う(表記ゆれ重複解決による差し替えはしない。完全一致の重複除去と、
     埋め込み再生できない動画の除外だけ行う)。アーティスト名の表示は、記号の
-    有無だけの表記ゆれだけを統一する(改名前後の別名義はそのまま区別する)。"""
+    有無だけの表記ゆれだけを統一する(改名前後の別名義はそのまま区別する)。
+    ストリーミング配信カタログに無くvideoIdが欠落している曲は、_recover_missing_playlist_track
+    で動画を探して補う(そのままでは大量の曲が丸ごと欠落してしまうため)。"""
     playlist_id = _extract_playlist_id(url_or_id)
     if not playlist_id:
         return None
@@ -390,7 +465,16 @@ def get_playlist_tracks(url_or_id):
     if not playlist:
         return None
 
-    raw_tracks = _dedupe_playlist_tracks(playlist.get("tracks") or [])
+    all_raw = playlist.get("tracks") or []
+    have_vid = [t for t in all_raw if t.get("videoId") and t.get("title")]
+    missing = [t for t in all_raw if not t.get("videoId") and t.get("title")]
+
+    if missing:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            recovered = list(pool.map(_recover_missing_playlist_track, missing))
+        have_vid.extend(t for t in recovered if t)
+
+    raw_tracks = _dedupe_playlist_tracks(have_vid)
     raw_tracks = _filter_embeddable(raw_tracks)
 
     tracks = []
@@ -924,7 +1008,58 @@ def _build_catalog_lookup(artist_id):
     return lookup
 
 
-def _fetch_official_mix_tracks(artist_id):
+def _resolve_mix_track(artist_name, mix_track, catalog_match):
+    """ミックス(シャッフル)自身が選んだ候補と、カタログ上の同名シングル/アルバム
+    候補を両方検討し、実際の動画の長さが申告時間と一致する(=videoIdの紐付けが
+    壊れていない)方を採用する。カタログ側を無条件に優先すると、カタログの
+    videoId自体が壊れている場合に問題が起きる(例:「きゅきゅきゅキュート」は
+    シャッフルの元の選択(TzOOU_eNdaY)が正しく、カタログ側(bR_S-naeDMM)が実際は
+    別の尺の動画に紐付いた壊れたデータだった)。逆にシャッフル側がMVを選んで
+    しまいカタログ側が正しいこともある(例:「WAO！アオハル！」)ため、どちらか
+    一方を機械的に信頼せず、両方の実際の尺を確認して判定する。
+    どちらも壊れている/ライブ版だった場合は_find_studio_alternativeで検索し、
+    それでも見つからなければNoneを返す(除外)。"""
+    candidates = []
+    if catalog_match and catalog_match.get("videoId") and catalog_match.get("type") in ("シングル・EP", "アルバム"):
+        candidates.append({
+            "videoId": catalog_match["videoId"],
+            "title": catalog_match.get("title") or mix_track["title"],
+            "duration_seconds": catalog_match.get("duration_seconds"),
+        })
+    candidates.append({
+        "videoId": mix_track["videoId"],
+        "title": mix_track["title"],
+        "duration_seconds": mix_track.get("duration_seconds"),
+    })
+    seen_vids = set()
+    uniq_candidates = []
+    for c in candidates:
+        if c["videoId"] in seen_vids:
+            continue
+        seen_vids.add(c["videoId"])
+        uniq_candidates.append(c)
+
+    for c in uniq_candidates:
+        if is_live_recording(c["title"]):
+            continue
+        _, actual_len = _fetch_song_details(c["videoId"])
+        if _is_duration_mismatched(c["duration_seconds"], actual_len):
+            continue
+        new_track = dict(mix_track)
+        new_track["videoId"] = c["videoId"]
+        new_track["title"] = strip_variant_for_display(clean_title(c["title"]))
+        if c["duration_seconds"]:
+            new_track["duration_seconds"] = c["duration_seconds"]
+        return new_track
+
+    alt = _find_studio_alternative(artist_name, mix_track)
+    if not alt:
+        return None
+    new_track, _, _ = alt
+    return new_track
+
+
+def _fetch_official_mix_tracks(artist_id, artist_name):
     """アーティストページの「シャッフル」ボタンに相当する、YouTube Music公式の
     おまかせミックス(shuffleId)から曲を取得する。「Presenting <アーティスト>」の
     ような公式プレイリストは検索で確実に見つける方法が無かったため、代わりに
@@ -960,24 +1095,19 @@ def _fetch_official_mix_tracks(artist_id):
         track["thumbnails"] = t.get("thumbnail") or []
         tracks.append(track)
 
-    # ミックス(シャッフル)は必ずしもシングル/アルバム版を選んでくれるとは限らず、
-    # MVや別テイクが混ざることがある(例: 「WAO！アオハル！」でミックスがMVを、
-    # カタログはシングルを指していて別のvideoIdだった)。曲名が一致するシングル/
-    # アルバムがカタログに存在すれば、そちらのvideoIdに差し替える。
     catalog_lookup = _build_catalog_lookup(artist_id)
-    for t in tracks:
-        match = catalog_lookup.get(normalize_title(t["title"]))
-        if match and match.get("videoId") and match["videoId"] != t["videoId"]:
-            t["videoId"] = match["videoId"]
-            t["title"] = strip_variant_for_display(clean_title(match.get("title") or t["title"]))
-            if match.get("duration_seconds"):
-                t["duration_seconds"] = match["duration_seconds"]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        resolved = list(pool.map(
+            lambda t: _resolve_mix_track(artist_name, t, catalog_lookup.get(normalize_title(t["title"]))),
+            tracks,
+        ))
+    tracks = [t for t in resolved if t is not None]
 
     tracks = _dedupe_playlist_tracks(tracks)
 
-    # 上の差し替えで複数のミックス曲が同じカタログ曲に収束することがあるほか、
-    # ミックス自体に同じ曲がMV版・音源版などで別videoIdとして混ざっていることも
-    # あるため、曲名ベースで「先に出てきた方を残す」重複除去も行う。
+    # 差し替えで複数のミックス曲が同じ曲に収束することがあるほか、ミックス自体に
+    # 同じ曲がMV版・音源版などで別videoIdとして混ざっていることもあるため、
+    # 曲名ベースで「先に出てきた方を残す」重複除去も行う。
     seen_titles = set()
     deduped = []
     for t in tracks:
@@ -1061,7 +1191,7 @@ def get_artist_tracks(artist_name, scope="all"):
                     tracks.append(t)
                     have_ids.add(t["videoId"])
     elif scope == "mix":
-        tracks = _filter_embeddable(_fetch_official_mix_tracks(artist_id))
+        tracks = _filter_embeddable(_fetch_official_mix_tracks(artist_id, canonical_name))
     else:
         # fetch_all_tracks自体がアルバム/シングル未登録の動画限定曲も含めて
         # 返すため、ここで別途動画セクションへフォールバックする必要はない。
