@@ -731,7 +731,13 @@ def fetch_all_tracks(artist_id):
             raw_tracks.append(t)
             existing_ids.add(t["videoId"])
 
-    _ARTIST_TRACKS_CACHE[artist_id] = raw_tracks
+    # 取得失敗/一時的な通信不調で空になった結果をキャッシュしてしまうと、
+    # 以後そのアーティストのあらゆる範囲(全曲/Top25/Top50/ミックスは全て
+    # ここを経由する)がサーバー再起動まで永久に「曲が見つかりませんでした」
+    # のままになってしまう(実際に本番でこの症状が起きた)。空の結果は
+    # キャッシュせず、次回のリクエストで取得し直せるようにする。
+    if raw_tracks:
+        _ARTIST_TRACKS_CACHE[artist_id] = raw_tracks
     return raw_tracks
 
 
@@ -908,7 +914,10 @@ def fetch_ranked_tracks(artist_id, artist_name):
         deduped.append(t)
 
     ranked = sorted(deduped, key=lambda t: t["_viewCount"], reverse=True)
-    _ARTIST_RANKED_CACHE[artist_id] = ranked
+    # 空の結果はキャッシュしない(fetch_all_tracksと同じ理由: 一時的な失敗を
+    # 永久に固定してしまわないため)。
+    if ranked:
+        _ARTIST_RANKED_CACHE[artist_id] = ranked
     return ranked
 
 
@@ -1071,7 +1080,9 @@ def _fetch_official_mix_tracks(artist_id, artist_name):
         seen_titles.add(key)
         deduped.append(t)
 
-    _ARTIST_MIX_CACHE[artist_id] = deduped
+    # 空の結果はキャッシュしない(fetch_all_tracksと同じ理由)。
+    if deduped:
+        _ARTIST_MIX_CACHE[artist_id] = deduped
     return deduped
 
 
@@ -1116,7 +1127,9 @@ def fetch_video_tracks(artist_id):
         track["year"] = "年不明"
         tracks.append(track)
 
-    _ARTIST_VIDEO_CACHE[artist_id] = tracks
+    # 空の結果はキャッシュしない(fetch_all_tracksと同じ理由)。
+    if tracks:
+        _ARTIST_VIDEO_CACHE[artist_id] = tracks
     return tracks
 
 
