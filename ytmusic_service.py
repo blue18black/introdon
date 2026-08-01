@@ -384,12 +384,13 @@ def get_playlist_tracks(url_or_id):
     表記の無い曲がLess Vocal版に化けてしまう等の不具合を繰り返し起こしていた
     ため)。ストリーミング配信カタログに無くvideoId自体が欠落している曲
     (isAvailable=false)は、差し替え候補を探そうとせず素直に諦める(無理に
-    別の曲を採用するとプレイリストの意図しない内容になるため)。埋め込み
-    再生できるかどうかの事前確認もしない――サーバーの設置地域(Render/
-    シンガポール)からの判定は実際の視聴者の地域と一致するとは限らないうえ、
-    大量の曲に対して行うとRender側のタイムアウトに引っかかっていた。本当に
-    再生できない曲は、クイズ側の「再生できなければ静かに別の曲へ差し替える」
-    仕組み(実際の視聴者の環境で判定するため、こちらの方が正確)に任せる。
+    別の曲を採用するとプレイリストの意図しない内容になるため)。
+    埋め込み再生できない動画(_filter_embeddable、検索は伴わない軽量な
+    oEmbedチェックのみ)は除外する――これを省いていた時期があったが、
+    「再生できませんでした」が連発してまともに遊べなくなる方が、多少
+    取りこぼしがあっても事前に弾く方より悪影響が大きいと判断した
+    (この事前確認自体は「差し替え」ではなく「除外」なので、プレイリストの
+    中身を勝手に別バージョンへ化けさせることはない)。
     アーティスト名の表示は、記号の有無だけの表記ゆれだけを統一する
     (改名前後の別名義はそのまま区別する)。"""
     playlist_id = _extract_playlist_id(url_or_id)
@@ -404,6 +405,7 @@ def get_playlist_tracks(url_or_id):
     have_vid = [t for t in all_raw if t.get("videoId") and t.get("title")]
 
     raw_tracks = _dedupe_playlist_tracks(have_vid)
+    raw_tracks = _filter_embeddable(raw_tracks)
 
     tracks = []
     for raw in raw_tracks:
