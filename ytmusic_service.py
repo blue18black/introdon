@@ -359,12 +359,16 @@ def _find_video_for_missing_track(artist_name, track):
     ようなカッコ書きがある場合、そのキーワードが候補タイトルにも含まれて
     いることを必須にする(無いと通常バージョンと取り違えてしまうため)。
     元のタイトルにカッコ書きが無いのに候補側にだけ既知のバージョン語が
-    付いている場合も、逆に別バージョンとみなして除外する。"""
+    付いている場合も、逆に別バージョンとみなして除外する。
+    さらに、元がライブ音源でないのに候補がライブ音源(曲名にlive/ライブ等を
+    含む)だったり、曲名は一致していても実際は全く別のアーティストの曲
+    (「フレ!フレ!」のような汎用的な曲名で起きた)だったりする場合も除外する。"""
     title = track.get("title", "")
     duration = track.get("duration_seconds")
     target_core = normalize_title(title)
     if not target_core:
         return None
+    target_is_live = is_live_recording(title)
 
     bracket_match = _BRACKET_CONTENT_RE.search(title)
     variant_keyword = bracket_match.group(1).strip().lower() if bracket_match else None
@@ -381,6 +385,10 @@ def _find_video_for_missing_track(artist_name, track):
             vid = r.get("videoId")
             cand_title_raw = r.get("title") or ""
             if not vid or not cand_title_raw:
+                continue
+            if not target_is_live and is_live_recording(cand_title_raw):
+                continue
+            if not _candidate_matches_artist(artist_name, r.get("artists")):
                 continue
             cand_title_lower = cand_title_raw.lower()
             if variant_keyword:
@@ -843,6 +851,28 @@ def _duration_str_to_seconds(s):
     return seconds
 
 
+_ARTIST_NAME_SYMBOL_RE = re.compile(r"[^\w]", re.UNICODE)
+
+
+def _artist_name_key(name):
+    return _ARTIST_NAME_SYMBOL_RE.sub("", name or "").lower()
+
+
+def _candidate_matches_artist(target_name, candidate_artists):
+    """検索結果が本当に目的のアーティストの曲かどうかを確認する。曲名だけで
+    一致判定すると、「フレ!フレ!」のような汎用的な曲名で全く別のアーティストの
+    曲に取り違えてしまうことがあった(タイトルと申告時間がたまたま近い曲は
+    別アーティストにも普通に存在しうる)。"""
+    target_key = _artist_name_key(target_name)
+    if not target_key:
+        return True
+    for a in candidate_artists or []:
+        key = _artist_name_key(a.get("name"))
+        if key and (key == target_key or key in target_key or target_key in key):
+            return True
+    return False
+
+
 def _find_studio_alternative(artist_name, track):
     """ライブ音源判定/カタログの申告時間との不整合で除外対象になった曲について、
     除外する前に同じ曲の別バージョン(スタジオ版など)が無いか直接検索して探す。
@@ -864,6 +894,8 @@ def _find_studio_alternative(artist_name, track):
             continue
         cand_title = r.get("title") or ""
         if normalize_title(cand_title) != title_key or is_live_recording(cand_title):
+            continue
+        if not _candidate_matches_artist(artist_name, r.get("artists")):
             continue
         view_count, actual_len = _fetch_song_details(vid)
         declared = _duration_str_to_seconds(r.get("duration")) or actual_len
