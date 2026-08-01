@@ -361,14 +361,16 @@ def _resolve_artist_id_cached(name):
     return target
 
 
-def _gather_alternative_candidates(artist_name, track, exclude_video_id=None):
+def _gather_alternative_candidates(artist_name, track, exclude_video_id=None, search_filters=("songs", "videos")):
     """同じ曲の別バージョン候補を集める(検索結果に加えて、アーティストの
     カタログ上のシングル/アルバム収録も候補にする)。サーバーの設置地域による
     配信ライセンス制限で特定のvideoIdだけ配信不可になっているケースでは、
     同じ曲の別のvideoId(別収録・別リリース)なら制限を受けていないことが
     あるため。カタログ由来の候補を優先し、次に検索結果を実時間の近い順で
     並べる。ライブ音源、別アーティストの曲、(Less Vocal)等のバージョン語の
-    不一致は除外する(曲名とバージョン言葉、アーティストの取り違えを防ぐため)。"""
+    不一致は除外する(曲名とバージョン言葉、アーティストの取り違えを防ぐため)。
+    search_filtersで使う検索フィルタを絞れる(Render側のゲートウェイタイムアウト
+    対策で、既にvideoIdがある曲の差し替えでは"songs"のみに絞って速くする)。"""
     title = track.get("title", "")
     duration = track.get("duration_seconds")
     target_core = normalize_title(title)
@@ -403,11 +405,17 @@ def _gather_alternative_candidates(artist_name, track, exclude_video_id=None):
             })
 
     query = f"{artist_name} {clean_title(title)}".strip()
-    for filt in ("songs", "videos"):
+
+    def do_search(filt):
         try:
-            results = _yt_ja.search(query, filter=filt, limit=10)
+            return _yt_ja.search(query, filter=filt, limit=10)
         except Exception:
-            results = []
+            return []
+
+    with ThreadPoolExecutor(max_workers=max(1, len(search_filters))) as pool:
+        results_by_filter = dict(zip(search_filters, pool.map(do_search, search_filters)))
+
+    for filt, results in results_by_filter.items():
         threshold = _DURATION_MISMATCH_THRESHOLD if filt == "songs" else 5
         for r in results:
             vid = r.get("videoId")
@@ -445,7 +453,7 @@ def _gather_alternative_candidates(artist_name, track, exclude_video_id=None):
 _ALTERNATIVE_CANDIDATE_LIMIT = 4
 
 
-def _find_alternative_track(track, exclude_video_id=None):
+def _find_alternative_track(track, exclude_video_id=None, search_filters=("songs", "videos")):
     """_gather_alternative_candidatesの候補(優先度順、最大_ALTERNATIVE_CANDIDATE_LIMIT件)
     について、実際にこの環境から埋め込み再生できる(_is_embeddable)かを
     まとめて並列確認し、優先度が最も高い(候補リストの先頭に近い)採用可能な
@@ -454,7 +462,9 @@ def _find_alternative_track(track, exclude_video_id=None):
     を超えて502になってしまうことがあったため、並列化して待ち時間を縮める。
     見つからなければNoneを返す(呼び出し側で諦める)。"""
     artist_name = _primary_artist_name(track.get("artists"))
-    candidates = _gather_alternative_candidates(artist_name, track, exclude_video_id)[:_ALTERNATIVE_CANDIDATE_LIMIT]
+    candidates = _gather_alternative_candidates(
+        artist_name, track, exclude_video_id, search_filters=search_filters
+    )[:_ALTERNATIVE_CANDIDATE_LIMIT]
     if not candidates:
         return None
 
@@ -496,9 +506,13 @@ def _filter_embeddable_with_fallback(tracks):
     ok_tracks = [t for t, ok in zip(tracks, results) if ok]
     failed_tracks = [t for t, ok in zip(tracks, results) if not ok]
     if failed_tracks:
+        # 既にvideoIdがある曲の差し替えは、カタログ+songs検索だけで十分実用的
+        # なことが多く、"videos"(UGC)検索まで含めると時間がかかりすぎるため
+        # 省略する(Render側のゲートウェイタイムアウト対策)。
         with ThreadPoolExecutor(max_workers=4) as pool:
             alternatives = list(pool.map(
-                lambda t: _find_alternative_track(t, exclude_video_id=t["videoId"]), failed_tracks
+                lambda t: _find_alternative_track(t, exclude_video_id=t["videoId"], search_filters=("songs",)),
+                failed_tracks,
             ))
         ok_tracks.extend(t for t in alternatives if t)
     return ok_tracks
