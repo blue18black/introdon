@@ -141,8 +141,21 @@ const YTPlayers = (() => {
       // (2秒モードで持ち時間の大半を無音のまま失う致命的な不具合の主因)。
       // 待たされる分には構わないので、上限を余裕を持って引き上げる。
       const maxConfirmChecks = 20 + Math.ceil((preRoll * 1000) / 100);
+      // getCurrentTime()が進み始めた/本来の開始位置に追いついた直後でも、実際に
+      // 音が耳に聞こえ始めるまでYouTube側の音声パイプラインがさらに一瞬(数百ms
+      // 程度)遅れることがある(進み始めた通知の方が実際の発声より早いことが
+      // ある)。この余白も持ち時間の外に追い出すため、確認が取れてから即座に
+      // begin()するのではなく、少しだけ間を置く。
+      const SETTLE_DELAY_MS = 300;
+      let settleTimer = null;
+      const clearSettle = () => {
+        if (settleTimer) {
+          clearTimeout(settleTimer);
+          settleTimer = null;
+        }
+      };
       const confirmReallyPlaying = () => {
-        if (settled || started || confirmTimer) return;
+        if (settled || started || confirmTimer || settleTimer) return;
         confirmChecks = 0;
         confirmLastTime = null;
         confirmTimer = setInterval(() => {
@@ -151,7 +164,15 @@ const YTPlayers = (() => {
           try { t = player.getCurrentTime(); } catch (e) { /* noop */ }
           const reachedTarget = preRoll > 0 && t != null && t >= startSeconds - 0.1;
           const advancing = preRoll === 0 && t != null && confirmLastTime != null && t > confirmLastTime + 0.05;
-          if (reachedTarget || advancing || confirmChecks >= maxConfirmChecks) {
+          if (reachedTarget || advancing) {
+            clearConfirm();
+            settleTimer = setTimeout(() => {
+              settleTimer = null;
+              begin();
+            }, SETTLE_DELAY_MS);
+            return;
+          }
+          if (confirmChecks >= maxConfirmChecks) {
             clearConfirm();
             begin();
             return;
@@ -175,8 +196,10 @@ const YTPlayers = (() => {
           // 差し引かないようタイマーを一時停止する。
           pauseTimer();
         } else {
-          // まだ本当の開始判定中にBUFFERING等へ戻った場合は確認をリセットする。
+          // まだ本当の開始判定中にBUFFERING等へ戻った場合は確認をリセットする
+          // (再生確認済みで待機中の余白タイマーも、ここで途切れたなら白紙に戻す)。
           clearConfirm();
+          clearSettle();
         }
       };
       const onError = () => {
@@ -195,6 +218,7 @@ const YTPlayers = (() => {
       const cleanup = () => {
         if (timeoutId) clearTimeout(timeoutId);
         clearConfirm();
+        clearSettle();
         player.removeEventListener("onStateChange", onStateChange);
         player.removeEventListener("onError", onError);
         if (activeCancel[playerIndex] === cancel) activeCancel[playerIndex] = null;
@@ -205,6 +229,7 @@ const YTPlayers = (() => {
         settled = true;
         if (timeoutId) clearTimeout(timeoutId);
         clearConfirm();
+        clearSettle();
         player.removeEventListener("onStateChange", onStateChange);
         player.removeEventListener("onError", onError);
       };
