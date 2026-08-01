@@ -240,14 +240,16 @@ _EMBEDDABLE_CACHE = {}
 
 
 def _is_embeddable(video_id):
-    """YouTube自身のplayabilityStatus(実際のIFrameプレーヤーが再生可否を
-    判定するのに使っているのと同じ情報源、get_song()経由で取得できる)を見て、
-    本当に再生できるかを事前確認する。以前はoEmbedエンドポイント(アップロード側が
-    埋め込みを許可しているかだけを見る軽量なシグナル)を使っていたが、
-    埋め込み許可はあっても実際には地域制限等で再生できない動画をすり抜けさせて
-    しまい、「再生できませんでした」が連発する不具合があったため、より確実な
-    情報源に切り替えた。status=="OK"以外(UNPLAYABLE/ERROR/LOGIN_REQUIRED等)は
-    確実な「再生不可」シグナルとして扱う。
+    """YouTube自身のplayabilityStatus(get_song()経由で取得できる、実際の
+    プレーヤーが再生可否判定に使うのと同じ情報源)を見て、本当に再生できるかを
+    事前確認する。status=="OK"かどうかで一般的な再生可否(地域制限・削除・
+    非公開等)を、playableInEmbedで「自サイトへの埋め込み再生」が個別に
+    許可されているかを見る――これは一般的な再生可否とは別に、アップロード側
+    (特に公式レーベルのチャンネルに多い)が明示的に埋め込みだけを禁止して
+    いることがあり、statusだけを見ているとすり抜けて「再生できませんでした」
+    の原因になっていたため(以前使っていたoEmbedの401はこの埋め込み可否だけを
+    見ていたが、地域制限等の一般的な再生不可は見えていなかった。両方の
+    シグナルを1回のget_song()呼び出しでまとめて見られるここに統合した)。
     通信自体の失敗(タイムアウト等)は、曲数の多いアーティストを一気に並列
     チェックした時にYouTube側から一時的にレート制限され、本来「再生不可」なはずの
     曲まで「念のため再生可能扱い」になってしまうことがあった。取得が遅くなっても
@@ -260,8 +262,10 @@ def _is_embeddable(video_id):
 
     def attempt():
         details = _yt.get_song(video_id)
-        status = (details.get("playabilityStatus") or {}).get("status")
-        return status == "OK"
+        ps = details.get("playabilityStatus") or {}
+        if ps.get("status") != "OK":
+            return False
+        return ps.get("playableInEmbed") is not False
 
     ok = True
     for i in range(2):
