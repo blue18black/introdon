@@ -442,15 +442,27 @@ def _gather_alternative_candidates(artist_name, track, exclude_video_id=None):
     return catalog_candidates + [c for _, c in search_candidates]
 
 
+_ALTERNATIVE_CANDIDATE_LIMIT = 4
+
+
 def _find_alternative_track(track, exclude_video_id=None):
-    """_gather_alternative_candidatesの候補を順に試し、実際にこの環境から
-    埋め込み再生できる(_is_embeddable)最初の候補を採用する。地域制限等で
-    特定の1つのvideoIdだけ配信不可になっている場合、候補側は問題なく再生
-    できることがあるため、埋め込み確認まで行ってから確定する。見つからなければ
-    Noneを返す(呼び出し側で諦める)。"""
+    """_gather_alternative_candidatesの候補(優先度順、最大_ALTERNATIVE_CANDIDATE_LIMIT件)
+    について、実際にこの環境から埋め込み再生できる(_is_embeddable)かを
+    まとめて並列確認し、優先度が最も高い(候補リストの先頭に近い)採用可能な
+    ものを使う。地域制限等で先頭の候補が軒並み配信不可な場合、1件ずつ順番に
+    確認していると時間がかかりすぎ、Render側のゲートウェイタイムアウト(約30秒)
+    を超えて502になってしまうことがあったため、並列化して待ち時間を縮める。
+    見つからなければNoneを返す(呼び出し側で諦める)。"""
     artist_name = _primary_artist_name(track.get("artists"))
-    for c in _gather_alternative_candidates(artist_name, track, exclude_video_id):
-        if not _is_embeddable(c["videoId"]):
+    candidates = _gather_alternative_candidates(artist_name, track, exclude_video_id)[:_ALTERNATIVE_CANDIDATE_LIMIT]
+    if not candidates:
+        return None
+
+    with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
+        ok_flags = list(pool.map(lambda c: _is_embeddable(c["videoId"]), candidates))
+
+    for c, ok in zip(candidates, ok_flags):
+        if not ok:
             continue
         new_track = dict(track)
         new_track["videoId"] = c["videoId"]
