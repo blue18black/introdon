@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
 
 import requests
 from ytmusicapi import YTMusic
@@ -508,6 +508,9 @@ def _normalize_artist_symbol_variants(tracks):
     return tracks
 
 
+_MISSING_TRACK_RECOVERY_BUDGET_SECONDS = 12
+
+
 def get_playlist_tracks(url_or_id):
     """YouTube Music/YouTubeのプレイリストのURL(またはID)から曲一覧を取得する。
     見つからない場合はNoneを返す。プレイリストに実際に入っている曲をそのまま
@@ -537,9 +540,24 @@ def get_playlist_tracks(url_or_id):
     missing = [t for t in all_raw if not t.get("videoId") and t.get("title")]
 
     if missing:
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            recovered = list(pool.map(_recover_missing_playlist_track, missing))
-        have_vid.extend(t for t in recovered if t)
+        # 欠落曲の探索(アーティストのカタログ全体の取得や検索)は、サーバーから
+        # YouTube Music側への通信状況によっては1曲あたり数秒〜十秒以上かかる
+        # ことがある。全部待つとRender側のタイムアウト(gunicorn側の設定を
+        # 伸ばしても超えてしまう、Render自体の上限とみられる)に引っかかり、
+        # プレイリスト全体の取得が失敗してしまう。時間内に終わった分だけを
+        # 採用し、間に合わなかった分は今回は諦める(shutdown(wait=False)で
+        # 後片付けを待たずに応答を返す)。
+        pool = ThreadPoolExecutor(max_workers=8)
+        futures = [pool.submit(_recover_missing_playlist_track, t) for t in missing]
+        done, _pending = futures_wait(futures, timeout=_MISSING_TRACK_RECOVERY_BUDGET_SECONDS)
+        for f in done:
+            try:
+                result = f.result()
+            except Exception:
+                result = None
+            if result:
+                have_vid.append(result)
+        pool.shutdown(wait=False)
 
     raw_tracks = _dedupe_playlist_tracks(have_vid)
 
