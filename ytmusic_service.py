@@ -508,7 +508,7 @@ def _normalize_artist_symbol_variants(tracks):
     return tracks
 
 
-_MISSING_TRACK_RECOVERY_BUDGET_SECONDS = 20
+_MISSING_TRACK_RECOVERY_BUDGET_SECONDS = 12
 
 
 def get_playlist_tracks(url_or_id):
