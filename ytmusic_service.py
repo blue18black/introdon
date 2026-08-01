@@ -348,33 +348,61 @@ def _dedupe_playlist_tracks(tracks):
 _BRACKET_CONTENT_RE = re.compile(r"[\(（]([^\)）]+)[\)）]")
 _KNOWN_VARIANT_WORDS = ("less vocal", "off vocal", "オフボーカル", "instrumental", "インスト", "カラオケ", "ver.", "version")
 
+_ARTIST_ID_RESOLVE_CACHE = {}
 
-def _find_video_for_missing_track(artist_name, track):
-    """曲名とプレイリスト側の申告時間が一致する動画を検索して見つける。
-    ストリーミングカタログに無い深い収録曲は「songs」検索でほぼヒットしない
-    ため「videos」検索(ファンアップロード含む)も試すが、UGC動画はタイトルの
-    表記ゆれが激しい一方、同じ音源の再アップロードなら実時間はほぼ一致する
-    ことが多いため、タイトルは部分一致、実時間は僅差(videos検索は±5秒、
-    songs検索は±20秒)を条件にする。ただし「(Less Vocal)」「(〇〇ver.)」の
-    ようなカッコ書きがある場合、そのキーワードが候補タイトルにも含まれて
-    いることを必須にする(無いと通常バージョンと取り違えてしまうため)。
-    元のタイトルにカッコ書きが無いのに候補側にだけ既知のバージョン語が
-    付いている場合も、逆に別バージョンとみなして除外する。
-    さらに、元がライブ音源でないのに候補がライブ音源(曲名にlive/ライブ等を
-    含む)だったり、曲名は一致していても実際は全く別のアーティストの曲
-    (「フレ!フレ!」のような汎用的な曲名で起きた)だったりする場合も除外する。"""
+
+def _resolve_artist_id_cached(name):
+    """プレイリストの1曲ごとにfind_target_artist()(検索を伴う)を毎回呼ぶと
+    同じアーティストに対して無駄な通信が繰り返されるため、プロセス内でキャッシュする。"""
+    if name in _ARTIST_ID_RESOLVE_CACHE:
+        return _ARTIST_ID_RESOLVE_CACHE[name]
+    target = find_target_artist(name)
+    _ARTIST_ID_RESOLVE_CACHE[name] = target
+    return target
+
+
+def _gather_alternative_candidates(artist_name, track, exclude_video_id=None):
+    """同じ曲の別バージョン候補を集める(検索結果に加えて、アーティストの
+    カタログ上のシングル/アルバム収録も候補にする)。サーバーの設置地域による
+    配信ライセンス制限で特定のvideoIdだけ配信不可になっているケースでは、
+    同じ曲の別のvideoId(別収録・別リリース)なら制限を受けていないことが
+    あるため。カタログ由来の候補を優先し、次に検索結果を実時間の近い順で
+    並べる。ライブ音源、別アーティストの曲、(Less Vocal)等のバージョン語の
+    不一致は除外する(曲名とバージョン言葉、アーティストの取り違えを防ぐため)。"""
     title = track.get("title", "")
     duration = track.get("duration_seconds")
     target_core = normalize_title(title)
     if not target_core:
-        return None
+        return []
     target_is_live = is_live_recording(title)
-
     bracket_match = _BRACKET_CONTENT_RE.search(title)
     variant_keyword = bracket_match.group(1).strip().lower() if bracket_match else None
 
+    seen_ids = {exclude_video_id} if exclude_video_id else set()
+    catalog_candidates = []
+    search_candidates = []
+
+    target = _resolve_artist_id_cached(artist_name)
+    if target:
+        _, artist_id = target
+        for t in fetch_all_tracks(artist_id):
+            vid = t.get("videoId")
+            cand_title_raw = t.get("title") or ""
+            if not vid or vid in seen_ids or not cand_title_raw:
+                continue
+            if t.get("type") not in ("シングル・EP", "アルバム"):
+                continue
+            if not target_is_live and is_live_recording(cand_title_raw):
+                continue
+            if normalize_title(cand_title_raw) != target_core:
+                continue
+            seen_ids.add(vid)
+            catalog_candidates.append({
+                "videoId": vid, "title": cand_title_raw,
+                "duration_seconds": t.get("duration_seconds"),
+            })
+
     query = f"{artist_name} {clean_title(title)}".strip()
-    best = None
     for filt in ("songs", "videos"):
         try:
             results = _yt_ja.search(query, filter=filt, limit=10)
@@ -384,7 +412,7 @@ def _find_video_for_missing_track(artist_name, track):
         for r in results:
             vid = r.get("videoId")
             cand_title_raw = r.get("title") or ""
-            if not vid or not cand_title_raw:
+            if not vid or vid in seen_ids or not cand_title_raw:
                 continue
             if not target_is_live and is_live_recording(cand_title_raw):
                 continue
@@ -405,25 +433,63 @@ def _find_video_for_missing_track(artist_name, track):
             diff = abs(cand_duration - duration)
             if diff > threshold:
                 continue
-            if best is None or diff < best[0]:
-                best = (diff, vid)
-    return best[1] if best else None
+            seen_ids.add(vid)
+            search_candidates.append((diff, {
+                "videoId": vid, "title": cand_title_raw, "duration_seconds": cand_duration,
+            }))
+
+    search_candidates.sort(key=lambda x: x[0])
+    return catalog_candidates + [c for _, c in search_candidates]
+
+
+def _find_alternative_track(track, exclude_video_id=None):
+    """_gather_alternative_candidatesの候補を順に試し、実際にこの環境から
+    埋め込み再生できる(_is_embeddable)最初の候補を採用する。地域制限等で
+    特定の1つのvideoIdだけ配信不可になっている場合、候補側は問題なく再生
+    できることがあるため、埋め込み確認まで行ってから確定する。見つからなければ
+    Noneを返す(呼び出し側で諦める)。"""
+    artist_name = _primary_artist_name(track.get("artists"))
+    for c in _gather_alternative_candidates(artist_name, track, exclude_video_id):
+        if not _is_embeddable(c["videoId"]):
+            continue
+        new_track = dict(track)
+        new_track["videoId"] = c["videoId"]
+        new_track["title"] = strip_variant_for_display(clean_title(c["title"]))
+        if c.get("duration_seconds"):
+            new_track["duration_seconds"] = c["duration_seconds"]
+        return new_track
+    return None
 
 
 def _recover_missing_playlist_track(track):
     """プレイリストのAPI応答では、ストリーミング配信カタログに無い曲(アニメ
-    タイアップ盤限定曲、Less Vocal版など)がisAvailable=falseとなりvideoId自体が
-    欠落することがある(「読み込めたはずの曲が半分以上取得できない」の主因)。
-    実際には動画自体はYouTube上に存在することが多いため、曲名(完全一致)と
-    申告時間が一致する動画を検索して補う。見つからなければその曲は諦める
-    (欠落したままにする方が、別バージョンに化けさせるより安全)。"""
-    artist_name = _primary_artist_name(track.get("artists"))
-    vid = _find_video_for_missing_track(artist_name, track)
-    if not vid:
-        return None
-    new_track = dict(track)
-    new_track["videoId"] = vid
-    return new_track
+    タイアップ盤限定曲、Less Vocal版など)や、サーバーの設置地域では配信
+    ライセンスが無い曲がisAvailable=falseとなりvideoId自体が欠落することが
+    ある(「読み込めたはずの曲が半分以上取得できない」の主因)。実際には動画
+    自体はYouTube上に存在することが多いため、別バージョンを探して補う。
+    見つからなければその曲は諦める(欠落したままにする方が、無関係な曲に
+    化けさせるより安全)。"""
+    return _find_alternative_track(track)
+
+
+def _filter_embeddable_with_fallback(tracks):
+    """埋め込み再生できない曲(サーバー設置地域のライセンス制限など)は、
+    即座に除外せず、まず同じ曲の別バージョンへの差し替えを試みる
+    (_find_alternative_track、埋め込み確認済みのものしか採用しない)。
+    それでも見つからない場合だけ除外する。"""
+    if not tracks:
+        return tracks
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda t: _is_embeddable(t["videoId"]), tracks))
+    ok_tracks = [t for t, ok in zip(tracks, results) if ok]
+    failed_tracks = [t for t, ok in zip(tracks, results) if not ok]
+    if failed_tracks:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            alternatives = list(pool.map(
+                lambda t: _find_alternative_track(t, exclude_video_id=t["videoId"]), failed_tracks
+            ))
+        ok_tracks.extend(t for t in alternatives if t)
+    return ok_tracks
 
 
 _SYMBOL_ONLY_DIFF_RE = re.compile(r"[^\w]", re.UNICODE)
@@ -460,9 +526,13 @@ def _normalize_artist_symbol_variants(tracks):
 def get_playlist_tracks(url_or_id):
     """YouTube Music/YouTubeのプレイリストのURL(またはID)から曲一覧を取得する。
     見つからない場合はNoneを返す。プレイリストに実際に入っている曲をそのまま
-    使う(表記ゆれ重複解決による差し替えはしない。完全一致の重複除去と、
-    埋め込み再生できない動画の除外だけ行う)。アーティスト名の表示は、記号の
-    有無だけの表記ゆれだけを統一する(改名前後の別名義はそのまま区別する)。
+    使う(表記ゆれによる「好みのバージョンへの差し替え」はしない。完全一致の
+    重複除去と、埋め込み再生できない動画の除外だけ行う)。ただし埋め込み再生
+    できない曲(サーバー設置地域のライセンス制限など、地域を問わず本当に
+    配信されていない曲ではない)は、除外する前に同じ曲の別バージョン
+    (シングル/アルバムの別収録など、ライブ音源は対象外)を探して差し替える
+    (_filter_embeddable_with_fallback)。アーティスト名の表示は、記号の有無
+    だけの表記ゆれだけを統一する(改名前後の別名義はそのまま区別する)。
     ストリーミング配信カタログに無くvideoIdが欠落している曲は、_recover_missing_playlist_track
     で動画を探して補う(そのままでは大量の曲が丸ごと欠落してしまうため)。"""
     playlist_id = _extract_playlist_id(url_or_id)
@@ -483,7 +553,7 @@ def get_playlist_tracks(url_or_id):
         have_vid.extend(t for t in recovered if t)
 
     raw_tracks = _dedupe_playlist_tracks(have_vid)
-    raw_tracks = _filter_embeddable(raw_tracks)
+    raw_tracks = _filter_embeddable_with_fallback(raw_tracks)
 
     tracks = []
     for raw in raw_tracks:
