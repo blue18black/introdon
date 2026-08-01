@@ -8,8 +8,6 @@ import functools
 import re
 import sys
 import time
-import urllib.error
-import urllib.request
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -242,12 +240,15 @@ _EMBEDDABLE_CACHE = {}
 
 
 def _is_embeddable(video_id):
-    """YouTubeのoEmbedエンドポイントで、動画が埋め込み再生できるかを事前確認する。
-    アップロード側が埋め込みを許可していない動画は401、削除/非公開になった動画は
-    404を返す--これがイントロクイズで「曲が流れない」の大半の原因(youtube-player.js
-    のonErrorで検出しているのと同じ制約)。ここで弾いておくことで、出題時にその
-    問題に当たる頻度そのものを減らす。
-    401/404以外の失敗(タイムアウト等)は、曲数の多いアーティストを一気に並列
+    """YouTube自身のplayabilityStatus(実際のIFrameプレーヤーが再生可否を
+    判定するのに使っているのと同じ情報源、get_song()経由で取得できる)を見て、
+    本当に再生できるかを事前確認する。以前はoEmbedエンドポイント(アップロード側が
+    埋め込みを許可しているかだけを見る軽量なシグナル)を使っていたが、
+    埋め込み許可はあっても実際には地域制限等で再生できない動画をすり抜けさせて
+    しまい、「再生できませんでした」が連発する不具合があったため、より確実な
+    情報源に切り替えた。status=="OK"以外(UNPLAYABLE/ERROR/LOGIN_REQUIRED等)は
+    確実な「再生不可」シグナルとして扱う。
+    通信自体の失敗(タイムアウト等)は、曲数の多いアーティストを一気に並列
     チェックした時にYouTube側から一時的にレート制限され、本来「再生不可」なはずの
     曲まで「念のため再生可能扱い」になってしまうことがあった。取得が遅くなっても
     正確さを優先し、間を置いて1回だけ再試行してから、それでも判定できない場合だけ
@@ -256,22 +257,16 @@ def _is_embeddable(video_id):
     """
     if video_id in _EMBEDDABLE_CACHE:
         return _EMBEDDABLE_CACHE[video_id]
-    url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
 
     def attempt():
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=4) as res:
-            return res.status == 200
+        details = _yt.get_song(video_id)
+        status = (details.get("playabilityStatus") or {}).get("status")
+        return status == "OK"
 
     ok = True
     for i in range(2):
         try:
             ok = attempt()
-            break
-        except urllib.error.HTTPError as e:
-            # 401(埋め込み不可)/404(動画が存在しない)は確実な「再生不可」シグナルなので
-            # 再試行しても意味がない。
-            ok = e.code not in (401, 404)
             break
         except Exception:
             if i == 0:
