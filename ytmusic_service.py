@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from ytmusicapi import YTMusic
@@ -345,154 +345,6 @@ def _dedupe_playlist_tracks(tracks):
     return deduped
 
 
-_BRACKET_CONTENT_RE = re.compile(r"[\(（]([^\)）]+)[\)）]")
-_KNOWN_VARIANT_WORDS = ("less vocal", "off vocal", "オフボーカル", "instrumental", "インスト", "カラオケ", "ver.", "version")
-
-_ARTIST_ID_RESOLVE_CACHE = {}
-
-
-def _resolve_artist_id_cached(name):
-    """プレイリストの1曲ごとにfind_target_artist()(検索を伴う)を毎回呼ぶと
-    同じアーティストに対して無駄な通信が繰り返されるため、プロセス内でキャッシュする。"""
-    if name in _ARTIST_ID_RESOLVE_CACHE:
-        return _ARTIST_ID_RESOLVE_CACHE[name]
-    target = find_target_artist(name)
-    _ARTIST_ID_RESOLVE_CACHE[name] = target
-    return target
-
-
-def _gather_alternative_candidates(artist_name, track, exclude_video_id=None, search_filters=("songs", "videos")):
-    """同じ曲の別バージョン候補を集める(検索結果に加えて、アーティストの
-    カタログ上のシングル/アルバム収録も候補にする)。サーバーの設置地域による
-    配信ライセンス制限で特定のvideoIdだけ配信不可になっているケースでは、
-    同じ曲の別のvideoId(別収録・別リリース)なら制限を受けていないことが
-    あるため。カタログ由来の候補を優先し、次に検索結果を実時間の近い順で
-    並べる。ライブ音源、別アーティストの曲、(Less Vocal)等のバージョン語の
-    不一致は除外する(曲名とバージョン言葉、アーティストの取り違えを防ぐため)。
-    search_filtersで使う検索フィルタを絞れる(Render側のゲートウェイタイムアウト
-    対策で、既にvideoIdがある曲の差し替えでは"songs"のみに絞って速くする)。"""
-    title = track.get("title", "")
-    duration = track.get("duration_seconds")
-    target_core = normalize_title(title)
-    if not target_core:
-        return []
-    target_is_live = is_live_recording(title)
-    bracket_match = _BRACKET_CONTENT_RE.search(title)
-    variant_keyword = bracket_match.group(1).strip().lower() if bracket_match else None
-
-    seen_ids = {exclude_video_id} if exclude_video_id else set()
-    catalog_candidates = []
-    search_candidates = []
-
-    target = _resolve_artist_id_cached(artist_name)
-    if target:
-        _, artist_id = target
-        catalog_matches = []
-        for t in fetch_all_tracks(artist_id):
-            vid = t.get("videoId")
-            cand_title_raw = t.get("title") or ""
-            if not vid or vid in seen_ids or not cand_title_raw:
-                continue
-            if t.get("type") not in ("シングル・EP", "アルバム"):
-                continue
-            if not target_is_live and is_live_recording(cand_title_raw):
-                continue
-            # normalize_titleはカッコ書きを除去するため、これだけでは
-            # 「(Less Vocal)」や「(〇〇ver.)」違いの別バージョンと衝突して
-            # しまう(取り違えの実例があった)。曲名側にバージョン語があれば
-            # 候補タイトルにも同じ語が無いと不採用、無ければ逆に候補側にだけ
-            # 既知のバージョン語が付いているものは不採用にする(search側と同じ扱い)。
-            if normalize_title(cand_title_raw) != target_core:
-                continue
-            cand_title_lower = cand_title_raw.lower()
-            if variant_keyword:
-                if variant_keyword not in cand_title_lower:
-                    continue
-            elif any(w in cand_title_lower for w in _KNOWN_VARIANT_WORDS):
-                continue
-            seen_ids.add(vid)
-            cand_duration = t.get("duration_seconds")
-            diff = abs(cand_duration - duration) if (duration and cand_duration) else 0
-            catalog_matches.append((diff, {
-                "videoId": vid, "title": cand_title_raw,
-                "duration_seconds": cand_duration,
-            }))
-        catalog_matches.sort(key=lambda x: x[0])
-        catalog_candidates = [c for _, c in catalog_matches]
-
-    query = f"{artist_name} {clean_title(title)}".strip()
-
-    def do_search(filt):
-        try:
-            return _yt_ja.search(query, filter=filt, limit=10)
-        except Exception:
-            return []
-
-    with ThreadPoolExecutor(max_workers=max(1, len(search_filters))) as pool:
-        results_by_filter = dict(zip(search_filters, pool.map(do_search, search_filters)))
-
-    for filt, results in results_by_filter.items():
-        threshold = _DURATION_MISMATCH_THRESHOLD if filt == "songs" else 5
-        for r in results:
-            vid = r.get("videoId")
-            cand_title_raw = r.get("title") or ""
-            if not vid or vid in seen_ids or not cand_title_raw:
-                continue
-            if not target_is_live and is_live_recording(cand_title_raw):
-                continue
-            if not _candidate_matches_artist(artist_name, r.get("artists")):
-                continue
-            cand_title_lower = cand_title_raw.lower()
-            if variant_keyword:
-                if variant_keyword not in cand_title_lower:
-                    continue
-            elif any(w in cand_title_lower for w in _KNOWN_VARIANT_WORDS):
-                continue
-            cand_core = normalize_title(cand_title_raw)
-            if target_core != cand_core and target_core not in cand_core:
-                continue
-            cand_duration = _duration_str_to_seconds(r.get("duration"))
-            if not duration or not cand_duration:
-                continue
-            diff = abs(cand_duration - duration)
-            if diff > threshold:
-                continue
-            seen_ids.add(vid)
-            search_candidates.append((diff, {
-                "videoId": vid, "title": cand_title_raw, "duration_seconds": cand_duration,
-            }))
-
-    search_candidates.sort(key=lambda x: x[0])
-    return catalog_candidates + [c for _, c in search_candidates]
-
-
-def _recover_missing_playlist_track(track):
-    """プレイリストのAPI応答では、ストリーミング配信カタログに無い曲(アニメ
-    タイアップ盤限定曲、Less Vocal版など)や、サーバーの設置地域では配信
-    ライセンスが無い曲がisAvailable=falseとなりvideoId自体が欠落することが
-    ある(「読み込めたはずの曲が半分以上取得できない」の主因)。実際には動画
-    自体はYouTube上に存在することが多いため、曲名・申告時間・アーティストが
-    一致する別バージョン(_gather_alternative_candidates、優先度順)を探して
-    補う。埋め込み確認はあえてしない――サーバー設置地域からの判定は実際の
-    視聴者の地域と一致するとは限らないうえ、確認の通信を積み重ねると
-    Render側のタイムアウト(約30秒、gunicorn側の設定を伸ばしても超えてしまう
-    ため、これより処理を軽くする方針にした)を超えてしまう。本当に再生
-    できない曲があっても、クイズ側の「再生できなければ静かに別の曲へ
-    差し替える」仕組み(実際の視聴者の環境で判定するため、より正確)が
-    最終的な保険になる。見つからなければその曲は諦める。"""
-    artist_name = _primary_artist_name(track.get("artists"))
-    candidates = _gather_alternative_candidates(artist_name, track)
-    if not candidates:
-        return None
-    c = candidates[0]
-    new_track = dict(track)
-    new_track["videoId"] = c["videoId"]
-    new_track["title"] = strip_variant_for_display(clean_title(c["title"]))
-    if c.get("duration_seconds"):
-        new_track["duration_seconds"] = c["duration_seconds"]
-    return new_track
-
-
 _SYMBOL_ONLY_DIFF_RE = re.compile(r"[^\w]", re.UNICODE)
 
 
@@ -524,25 +376,22 @@ def _normalize_artist_symbol_variants(tracks):
     return tracks
 
 
-_MISSING_TRACK_RECOVERY_BUDGET_SECONDS = 12
-
-
 def get_playlist_tracks(url_or_id):
     """YouTube Music/YouTubeのプレイリストのURL(またはID)から曲一覧を取得する。
     見つからない場合はNoneを返す。プレイリストに実際に入っている曲をそのまま
-    使う(表記ゆれによる「好みのバージョンへの差し替え」はしない。完全一致の
-    重複除去だけ行う)。埋め込み再生できるかどうかの事前確認はあえてしない
-    ――サーバーの設置地域(Render/シンガポール)からの判定は、実際の視聴者の
-    地域と一致するとは限らず(地域ライセンスで見え方が変わる)、判定のための
-    通信を大量の曲に対して積み重ねるとRender側のタイムアウト(gunicorn側の
-    設定を伸ばしても超えてしまう、Render自体の上限とみられる)に引っかかって
-    プレイリスト全体の取得が失敗してしまっていた。本当に再生できない曲は、
-    クイズ側の「再生できなければ静かに別の曲へ差し替える」仕組み(実際の
-    視聴者の環境で判定するため、こちらの方が正確)が最終的な保険になる。
+    使う――検索による別バージョンへの差し替えは行わない(「そのまま読み込めば
+    いい」という明示的な要望、かつ検索ベースの差し替えは曲名にバージョン
+    表記の無い曲がLess Vocal版に化けてしまう等の不具合を繰り返し起こしていた
+    ため)。ストリーミング配信カタログに無くvideoId自体が欠落している曲
+    (isAvailable=false)は、差し替え候補を探そうとせず素直に諦める(無理に
+    別の曲を採用するとプレイリストの意図しない内容になるため)。埋め込み
+    再生できるかどうかの事前確認もしない――サーバーの設置地域(Render/
+    シンガポール)からの判定は実際の視聴者の地域と一致するとは限らないうえ、
+    大量の曲に対して行うとRender側のタイムアウトに引っかかっていた。本当に
+    再生できない曲は、クイズ側の「再生できなければ静かに別の曲へ差し替える」
+    仕組み(実際の視聴者の環境で判定するため、こちらの方が正確)に任せる。
     アーティスト名の表示は、記号の有無だけの表記ゆれだけを統一する
-    (改名前後の別名義はそのまま区別する)。ストリーミング配信カタログに無く
-    videoIdが欠落している曲は、_recover_missing_playlist_trackで動画を探して
-    補う(そのままでは大量の曲が丸ごと欠落してしまうため)。"""
+    (改名前後の別名義はそのまま区別する)。"""
     playlist_id = _extract_playlist_id(url_or_id)
     if not playlist_id:
         return None
@@ -553,33 +402,6 @@ def get_playlist_tracks(url_or_id):
 
     all_raw = playlist.get("tracks") or []
     have_vid = [t for t in all_raw if t.get("videoId") and t.get("title")]
-    missing = [t for t in all_raw if not t.get("videoId") and t.get("title")]
-
-    if missing:
-        # 欠落曲の探索(アーティストのカタログ全体の取得や検索)は、サーバーから
-        # YouTube Music側への通信状況によっては1曲あたり数秒〜十秒以上かかる
-        # ことがある。全部待つとRender側のタイムアウト(gunicorn側の設定を
-        # 伸ばしても超えてしまう、Render自体の上限とみられる)に引っかかり、
-        # プレイリスト全体の取得が失敗してしまう。時間内に終わった分だけを
-        # 採用し、間に合わなかった分は今回は諦める。
-        # 欠落曲が多いプレイリスト(未着手のfutureが大量に残る)で、時間切れ後も
-        # 全件処理し終わるまでバックグラウンドで動き続け、リクエストのたびに
-        # 積み重なってメモリを圧迫していた不具合があったため、時間切れ時点で
-        # まだ実行開始していないfutureは明示的にキャンセルする(実行中のものは
-        # 中断できないが、max_workers分に限られる)。
-        pool = ThreadPoolExecutor(max_workers=4)
-        futures = [pool.submit(_recover_missing_playlist_track, t) for t in missing]
-        done, pending = futures_wait(futures, timeout=_MISSING_TRACK_RECOVERY_BUDGET_SECONDS)
-        for f in pending:
-            f.cancel()
-        for f in done:
-            try:
-                result = f.result()
-            except Exception:
-                result = None
-            if result:
-                have_vid.append(result)
-        pool.shutdown(wait=False)
 
     raw_tracks = _dedupe_playlist_tracks(have_vid)
 
