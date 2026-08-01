@@ -79,8 +79,29 @@ def api_debug_artist():
     try:
         raw = ytmusic_service.fetch_all_tracks(artist_id)
         out["fetch_all_tracks_count"] = len(raw)
+        out["fetch_all_tracks_sample_ids"] = [t.get("videoId") for t in raw[:5]]
+        out["fetch_all_tracks_unique_ids"] = len({t.get("videoId") for t in raw})
     except Exception as e:
         out["fetch_all_tracks_error"] = f"{type(e).__name__}: {e}"
+        return jsonify(out)
+    try:
+        cleaned = ytmusic_service._clean_and_dedupe(raw)
+        out["clean_and_dedupe_count"] = len(cleaned)
+    except Exception as e:
+        out["clean_and_dedupe_error"] = f"{type(e).__name__}: {e}"
+        return jsonify(out)
+    try:
+        canonical_name = target[0]
+        resolved = ytmusic_service._resolve_all_tracks_quality(cleaned, canonical_name)
+        out["resolve_all_tracks_quality_count"] = len(resolved)
+    except Exception as e:
+        out["resolve_all_tracks_quality_error"] = f"{type(e).__name__}: {e}"
+        return jsonify(out)
+    try:
+        filtered = ytmusic_service._filter_embeddable(resolved)
+        out["filter_embeddable_count"] = len(filtered)
+    except Exception as e:
+        out["filter_embeddable_error"] = f"{type(e).__name__}: {e}"
     return jsonify(out)
 
 
