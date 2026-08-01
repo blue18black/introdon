@@ -561,11 +561,17 @@ def get_playlist_tracks(url_or_id):
         # ことがある。全部待つとRender側のタイムアウト(gunicorn側の設定を
         # 伸ばしても超えてしまう、Render自体の上限とみられる)に引っかかり、
         # プレイリスト全体の取得が失敗してしまう。時間内に終わった分だけを
-        # 採用し、間に合わなかった分は今回は諦める(shutdown(wait=False)で
-        # 後片付けを待たずに応答を返す)。
-        pool = ThreadPoolExecutor(max_workers=8)
+        # 採用し、間に合わなかった分は今回は諦める。
+        # 欠落曲が多いプレイリスト(未着手のfutureが大量に残る)で、時間切れ後も
+        # 全件処理し終わるまでバックグラウンドで動き続け、リクエストのたびに
+        # 積み重なってメモリを圧迫していた不具合があったため、時間切れ時点で
+        # まだ実行開始していないfutureは明示的にキャンセルする(実行中のものは
+        # 中断できないが、max_workers分に限られる)。
+        pool = ThreadPoolExecutor(max_workers=4)
         futures = [pool.submit(_recover_missing_playlist_track, t) for t in missing]
-        done, _pending = futures_wait(futures, timeout=_MISSING_TRACK_RECOVERY_BUDGET_SECONDS)
+        done, pending = futures_wait(futures, timeout=_MISSING_TRACK_RECOVERY_BUDGET_SECONDS)
+        for f in pending:
+            f.cancel()
         for f in done:
             try:
                 result = f.result()
