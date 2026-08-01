@@ -1009,28 +1009,29 @@ def _build_catalog_lookup(artist_id):
 
 
 def _resolve_mix_track(artist_name, mix_track, catalog_match):
-    """ミックス(シャッフル)自身が選んだ候補と、カタログ上の同名シングル/アルバム
-    候補を両方検討し、実際の動画の長さが申告時間と一致する(=videoIdの紐付けが
-    壊れていない)方を採用する。カタログ側を無条件に優先すると、カタログの
-    videoId自体が壊れている場合に問題が起きる(例:「きゅきゅきゅキュート」は
-    シャッフルの元の選択(TzOOU_eNdaY)が正しく、カタログ側(bR_S-naeDMM)が実際は
-    別の尺の動画に紐付いた壊れたデータだった)。逆にシャッフル側がMVを選んで
-    しまいカタログ側が正しいこともある(例:「WAO！アオハル！」)ため、どちらか
-    一方を機械的に信頼せず、両方の実際の尺を確認して判定する。
+    """公式MIX(シャッフル)が選んだ内容は、原則としてそのまま信頼する
+    (「ライブver.が公式MICKXに入っているなら仕方ないが、そうでないなら勝手に
+    違うものに差し替えないでほしい」という指摘の通り)。シャッフル自身の候補を
+    まず検証し、曲名にlive/ライブ等を含まず、実際の動画の長さが申告時間と
+    一致していれば、それをそのまま採用する(カタログ上に一致するシングル/
+    アルバムがあっても、シャッフル側が既に正常ならそちらへ差し替えない)。
+    シャッフル自身の候補が壊れている場合(例:「きゅきゅきゅキュート」で
+    カタログ側のvideoIdが別の尺の動画に紐付いていたのと同じ壊れ方が
+    シャッフル側で起きているケース)に限り、カタログ上の同名シングル/
+    アルバムを次点の候補として試す(例:「WAO！アオハル！」)。
     どちらも壊れている/ライブ版だった場合は_find_studio_alternativeで検索し、
     それでも見つからなければNoneを返す(除外)。"""
-    candidates = []
+    candidates = [{
+        "videoId": mix_track["videoId"],
+        "title": mix_track["title"],
+        "duration_seconds": mix_track.get("duration_seconds"),
+    }]
     if catalog_match and catalog_match.get("videoId") and catalog_match.get("type") in ("シングル・EP", "アルバム"):
         candidates.append({
             "videoId": catalog_match["videoId"],
             "title": catalog_match.get("title") or mix_track["title"],
             "duration_seconds": catalog_match.get("duration_seconds"),
         })
-    candidates.append({
-        "videoId": mix_track["videoId"],
-        "title": mix_track["title"],
-        "duration_seconds": mix_track.get("duration_seconds"),
-    })
     seen_vids = set()
     uniq_candidates = []
     for c in candidates:

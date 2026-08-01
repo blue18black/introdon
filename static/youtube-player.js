@@ -134,9 +134,13 @@ const YTPlayers = (() => {
       // preRollを入れている場合(本来の開始位置より手前から読み込んでいる場合)は、
       // 単に「進んでいる」だけでは不十分(それはまだpreRoll区間を再生中なだけ
       // かもしれない)なので、実際に本来の開始位置まで追いついたことを確認する。
-      // 反応がなくても(preRoll分を考慮した)上限時間で諦めて開始扱いにするので、
-      // これ以上際限なく待たされることはない。
-      const maxConfirmChecks = 6 + Math.ceil((preRoll * 1000) / 100);
+      // startSeconds=0(イントロモード)はシークが無いのでpreRollを付けようが
+      // なく、以前は上限600ms(6回)で見切りをつけていたが、これだと動画を
+      // 初めて読み込む「コールド」な状態でのバッファリング遅延がこの時間を
+      // 超えた場合、まだ音が鳴っていないのにカウントダウンが始まってしまう
+      // (2秒モードで持ち時間の大半を無音のまま失う致命的な不具合の主因)。
+      // 待たされる分には構わないので、上限を余裕を持って引き上げる。
+      const maxConfirmChecks = 20 + Math.ceil((preRoll * 1000) / 100);
       const confirmReallyPlaying = () => {
         if (settled || started || confirmTimer) return;
         confirmChecks = 0;
