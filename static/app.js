@@ -349,6 +349,16 @@
         });
         resumeEl.appendChild(resumeBtn);
 
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.className = "artist-entry-loading-cancel";
+        deleteBtn.textContent = "削除";
+        deleteBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          removeArtistEntry(entry);
+        });
+        resumeEl.appendChild(deleteBtn);
+
         li.appendChild(resumeEl);
       }
 
@@ -405,10 +415,7 @@
       removeBtn.className = "artist-entry-remove";
       removeBtn.textContent = "×";
       removeBtn.addEventListener("click", () => {
-        State.selectedArtists = State.selectedArtists.filter((a) => a.name !== entry.name);
-        if (openPreviewName === entry.name) openPreviewName = null;
-        renderArtistEntries();
-        refreshArtistPool();
+        removeArtistEntry(entry);
       });
 
       li.appendChild(nameEl);
@@ -422,6 +429,14 @@
 
   const artistFetchControllers = {}; // `${name}::${scope}` -> AbortController(中断ボタン用)
   const cancelledArtistKeys = new Set(); // `${name}::${scope}` 中断済み(再開ボタンを出す)
+
+  function removeArtistEntry(entry) {
+    State.selectedArtists = State.selectedArtists.filter((a) => a.name !== entry.name);
+    cancelledArtistKeys.delete(`${entry.name}::${entry.scope}`);
+    if (openPreviewName === entry.name) openPreviewName = null;
+    renderArtistEntries();
+    refreshArtistPool();
+  }
 
   function cancelArtistFetch(name, scope) {
     const key = `${name}::${scope}`;
@@ -438,10 +453,15 @@
     refreshArtistPool();
   }
 
+  // 中断済みのアーティストは、他のアーティストを新たに追加/変更した時にも
+  // refreshArtistPool()がまとめて全アーティストを再取得しようとする巻き添えで
+  // 勝手に取得が再開してしまっていた(「再開」ボタンを押していないのに読み込みが
+  // 始まる不具合)。明示的な再開(resumeArtistFetch、cancelledArtistKeysから
+  // 削除済み)を経ていない限り、ここで取得をスキップする。
   async function fetchArtistPoolCached(name, scope) {
     const key = `${name}::${scope}`;
     if (State.artistTrackCache[key]) return State.artistTrackCache[key];
-    cancelledArtistKeys.delete(key);
+    if (cancelledArtistKeys.has(key)) return null;
     loadingArtistKeys.add(key);
     const controller = new AbortController();
     artistFetchControllers[key] = controller;
@@ -484,7 +504,7 @@
     const seenIds = new Set();
     const resolvedNames = [];
     let failCount = 0;
-    results.forEach((r) => {
+    results.forEach((r, i) => {
       if (r.status === "fulfilled" && r.value && r.value.tracks && r.value.tracks.length > 0) {
         resolvedNames.push(r.value.artistName);
         r.value.tracks.forEach((t) => {
@@ -493,7 +513,9 @@
             merged.push(t);
           }
         });
-      } else {
+      } else if (!cancelledArtistKeys.has(`${entries[i].name}::${entries[i].scope}`)) {
+        // 中断済みでまだ再開していないアーティストは、失敗扱いにはしない
+        // (再開ボタンで自分から取得を始めるまでは黙って除外するだけでよい)。
         failCount++;
       }
     });

@@ -57,6 +57,16 @@ const YTPlayers = (() => {
     return pool.slice(0, count);
   }
 
+  // 動画の途中(startSeconds > 0)へシークした直後は、YouTube側の内部処理で
+  // 実際に音が鳴り始めるまで数百ms〜1秒ほどの遅延/こま切れが起きることがある。
+  // これまではPLAYING状態への遷移とgetCurrentTime()の進行だけを見て「開始」と
+  // みなしていたため、この遅延の間もカウントダウン(=出題時間)が進んでしまい、
+  // 特に2秒モードのような短い設定では音が鳴らないまま持ち時間の半分近くを
+  // 失うことがあった(致命的な不具合)。本来の開始位置より少し手前から静かに
+  // 読み込みを始め、実際にgetCurrentTime()が本来の開始位置に追いついてから
+  // 初めて「開始」とみなすことで、この遅延を持ち時間の外に追い出す。
+  const PRE_ROLL_SECONDS = 1.2;
+
   function playOne(playerIndex, player, videoId, startSeconds, playSeconds, onStart) {
     return new Promise((resolve) => {
       // 同じプレーヤーで前の再生(「もう一度再生」の残りなど)がまだ後片付けされて
@@ -82,6 +92,8 @@ const YTPlayers = (() => {
       // 戻ったら残り時間からタイマーを再開する。
       let remainingMs = playSeconds * 1000;
       let segmentStartedAt = null;
+      const preRoll = startSeconds > 0 ? Math.min(PRE_ROLL_SECONDS, startSeconds) : 0;
+      const loadStartSeconds = Math.max(0, startSeconds - preRoll);
 
       const pauseTimer = () => {
         if (timeoutId) {
@@ -118,9 +130,13 @@ const YTPlayers = (() => {
 
       // PLAYING状態は、実際に音が聞こえ始めるより一瞬早く報告されることがある
       // (カウントダウンは始まっているのにまだ無音、という体感のズレの原因)。
-      // 最初の開始判定だけは、getCurrentTime()が実際に進み始めたことを短時間
-      // 確認してからbegin()する。反応がなくても最大600ms(6回×100ms)で
-      // 諦めて開始扱いにするので、これ以上待たされることはない。
+      // 最初の開始判定だけは、getCurrentTime()の進みを確認してからbegin()する。
+      // preRollを入れている場合(本来の開始位置より手前から読み込んでいる場合)は、
+      // 単に「進んでいる」だけでは不十分(それはまだpreRoll区間を再生中なだけ
+      // かもしれない)なので、実際に本来の開始位置まで追いついたことを確認する。
+      // 反応がなくても(preRoll分を考慮した)上限時間で諦めて開始扱いにするので、
+      // これ以上際限なく待たされることはない。
+      const maxConfirmChecks = 6 + Math.ceil((preRoll * 1000) / 100);
       const confirmReallyPlaying = () => {
         if (settled || started || confirmTimer) return;
         confirmChecks = 0;
@@ -129,8 +145,9 @@ const YTPlayers = (() => {
           confirmChecks++;
           let t = null;
           try { t = player.getCurrentTime(); } catch (e) { /* noop */ }
-          const advancing = t != null && confirmLastTime != null && t > confirmLastTime + 0.05;
-          if (advancing || confirmChecks >= 6) {
+          const reachedTarget = preRoll > 0 && t != null && t >= startSeconds - 0.1;
+          const advancing = preRoll === 0 && t != null && confirmLastTime != null && t > confirmLastTime + 0.05;
+          if (reachedTarget || advancing || confirmChecks >= maxConfirmChecks) {
             clearConfirm();
             begin();
             return;
@@ -191,7 +208,7 @@ const YTPlayers = (() => {
 
       const load = () => {
         try {
-          player.loadVideoById({ videoId, startSeconds });
+          player.loadVideoById({ videoId, startSeconds: loadStartSeconds });
         } catch (e) {
           settled = true;
           cleanup();
