@@ -697,6 +697,10 @@
   // 済ませておく。1問目→2問目の切り替えでもラグが出ないよう、2問目分もここで
   // 先読みしておく(3問目以降は毎問、答え合わせ中に次を先読みする)。
   async function startGame(triggerBtn) {
+    // クリックイベントハンドラの中で(awaitを挟む前に)呼ぶことで、ブラウザに
+    // 「ユーザー操作に基づくミュート解除」だと認識させる(下記prepareの
+    // 事前呼び出しにより、この時点で既にプレーヤーが存在しているはず)。
+    YTPlayers.unmuteAll();
     const originalLabel = triggerBtn.textContent;
     triggerBtn.disabled = true;
     triggerBtn.textContent = "準備中...";
@@ -877,6 +881,7 @@
 
   $("replay-btn").addEventListener("click", (e) => {
     flashPressed(e.currentTarget);
+    YTPlayers.unmuteAll();
     playCurrentClip();
   });
 
@@ -886,6 +891,7 @@
   // 順番に聞いていけるよう、ずらす量は「今まで流した秒数分」ちょうどにする。
   $("skip-ahead-btn").addEventListener("click", (e) => {
     flashPressed(e.currentTarget);
+    YTPlayers.unmuteAll();
     introSkipOffset += currentPlaybackPlan.playSeconds;
     loadCurrentQuestionPlan();
     playCurrentClip();
@@ -1049,6 +1055,7 @@
   }
 
   $("answer-next").addEventListener("click", () => {
+    YTPlayers.unmuteAll();
     const session = State.session;
     // もう一度再生/続きから再生で曲が流れている最中でも、次へを押したら
     // その再生を打ち切ってすぐ次の問題に進む。
@@ -1156,4 +1163,14 @@
   $("result-home").addEventListener("click", goHome);
   // 同じ設定(曲プール・問題数・秒数)のままもう一度遊べるようにする。
   $("result-retry").addEventListener("click", () => startGame($("result-retry")));
+
+  // ページ読み込み時点でプレーヤー(iframe API読み込み含む)を先に用意しておく。
+  // 「スタート!」クリックのタイミングでゼロから生成すると、iframe APIの
+  // 読み込み待ちなどでawaitを挟むことになり、クリックという「ユーザー操作」との
+  // 直接のつながりが失われてしまう。ブラウザの自動再生ポリシーは、ユーザー
+  // 操作から直接つながっていない音声付き自動再生を許可しないことが多く、これが
+  // 「再生中と表示されるのに実際には無音のまま」の不具合の原因だった。事前に
+  // プレーヤーを用意しておけば、クリックハンドラ内でawait無しにunmuteAll()を
+  // 呼べる(YTPlayers.unmuteAll呼び出し箇所を参照)。戻り値は待たなくてよい。
+  YTPlayers.prepare(2);
 })();

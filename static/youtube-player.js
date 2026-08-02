@@ -40,6 +40,9 @@ const YTPlayers = (() => {
           modestbranding: 1,
           playsinline: 1,
           rel: 0,
+          // ブラウザの自動再生ポリシー対策(下記unmuteAll参照)で、まずは
+          // ミュート状態で確実に再生できるようにしておく。
+          mute: 1,
           origin: window.location.origin,
         },
         events: {
@@ -288,6 +291,27 @@ const YTPlayers = (() => {
     // 最初の1曲の再生開始が遅れる/反応しない事象を減らす。戻り値は待たなくてよい。
     prepare(count) {
       return ensurePool(count);
+    },
+
+    // 現在プール内に存在する全プレーヤーのミュートを解除する。ブラウザの
+    // 自動再生ポリシーは、ユーザー操作(クリック等)から直接つながっていない
+    // 場面での音声付き自動再生を許可しないことが多く、これまでプレーヤーは
+    // 「PLAYING状態になり時間も進んでいるのに実際には無音」という状態に
+    // なっていた(「スタート!」クリック→非同期でiframe API読み込み→
+    // プレーヤー生成→再生、という間にawaitが挟まり、クリックとの直接の
+    // つながりが失われてしまうため)。プレーヤー自体は最初からミュートで
+    // 確実に自動再生できるようにしておき(createPlayerのmute:1)、実際の
+    // クリックイベントハンドラの中で(awaitを挟まず)この関数を呼んで
+    // ミュート解除することで、ブラウザにユーザー操作に基づく解除だと
+    // 認識させる。一度ミュート解除すれば、以降そのプレーヤーインスタンスで
+    // loadVideoById()するだけの後続の曲でも音が鳴り続ける。
+    unmuteAll() {
+      pool.forEach((p) => {
+        try {
+          p.unMute();
+          p.setVolume(100);
+        } catch (e) { /* noop */ }
+      });
     },
 
     // videoIds: string[], startSecondsList: number[] (同じ長さ), playSeconds: number
