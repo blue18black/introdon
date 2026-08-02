@@ -157,6 +157,22 @@ def filter_instrumental(tracks):
     return [t for t in tracks if not is_instrumental(t["title"])]
 
 
+_MEDLEY_TITLE_RE = re.compile(r"\S/\S")
+
+
+def is_medley_title(title: str) -> bool:
+    """「曲A/曲B」のように、1トラックに複数の曲(メドレー/ユニット企画曲など)が
+    まとまっている曲を検出する(私立恵比寿中学の「ユニットアルバム」収録曲で
+    典型的なパターン)。1トラックの中に別々の曲が混在しており、イントロ当てクイズの
+    「1曲を当てる」という前提に合わないため除外する(配信データの信頼性が
+    低い傾向があることも合わせて、除外する理由になる)。"""
+    return bool(_MEDLEY_TITLE_RE.search(title))
+
+
+def filter_medley(tracks):
+    return [t for t in tracks if not is_medley_title(t["title"])]
+
+
 def resolve_duplicates(tracks):
     """タイトルの表記ゆれ重複を検出し、優先順位ルールで1曲に絞り込む(playlist_builder.pyと同ロジック)。"""
     key_by_video_id = {}
@@ -213,6 +229,7 @@ def _clean_and_dedupe(tracks):
     (lyrics-quizの_dedupe_tracksと同じ処理順)。"""
     tracks = [t for t in tracks if t.get("videoId") and t.get("title")]
     tracks = filter_instrumental(tracks)
+    tracks = filter_medley(tracks)
 
     cleaned = []
     for t in tracks:
@@ -881,6 +898,7 @@ def fetch_ranked_tracks(artist_id, artist_name):
 
     raw = [t for t in fetch_all_tracks(artist_id) if t.get("videoId") and t.get("title")]
     raw = filter_instrumental(raw)
+    raw = filter_medley(raw)
     candidates = []
     for t in raw:
         t = dict(t)
@@ -1055,6 +1073,8 @@ def _fetch_official_mix_tracks(artist_id, artist_name):
     tracks = []
     for t in raw_tracks:
         if not t.get("videoId") or not t.get("title"):
+            continue
+        if is_medley_title(t["title"]):
             continue
         track = dict(t)
         track["duration_seconds"] = _duration_str_to_seconds(t.get("length"))
