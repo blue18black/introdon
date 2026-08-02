@@ -405,24 +405,38 @@ def _fetch_playlist_by_id(playlist_id, limit=500):
     videoId欠落(isAvailable=false)として返るかも、取得のたびに結果が
     ばらつくことが実際に確認できた(同じプレイリストへの複数回の取得で
     有効曲数が66件/186件のように変動した)。trackCountの申告値を信用して
-    早期に打ち切るのではなく、常に複数回取得し直した上で、実際に再生に
-    使える(videoId/titleが揃っている)トラック数が最も多かった結果を採用する。"""
+    早期に打ち切るのではなく、実際に再生に使える(videoId/titleが揃っている)
+    トラック数が多かった方を採用する。
+    Renderには(gunicorn自体のtimeout設定とは別に)プラットフォーム側の
+    ゲートウェイに30秒前後のハードタイムアウトがあり、逐次に何度も取得し
+    直すと合計の所要時間がそれを超えて「読み込みに失敗しました」になって
+    しまう(ローカルでは取得できるのにRenderでは失敗する、という形で
+    報告があった)。2つのID形式を逐次ではなく並列に1回ずつ試すことで、
+    リトライの安全性を保ちつつ所要時間を増やさないようにする。"""
     variants = [playlist_id]
     variants.append(playlist_id[2:] if playlist_id.startswith("VL") else "VL" + playlist_id)
+
+    def _attempt(pid):
+        try:
+            playlist = _yt_ja.get_playlist(pid, limit=limit)
+        except Exception:
+            return None
+        if not playlist or not playlist.get("tracks"):
+            return None
+        return playlist
+
+    with ThreadPoolExecutor(max_workers=len(variants)) as pool:
+        results = list(pool.map(_attempt, variants))
+
     best = None
     best_valid_count = -1
-    for _attempt in range(2):
-        for pid in variants:
-            try:
-                playlist = _yt_ja.get_playlist(pid, limit=limit)
-            except Exception:
-                continue
-            if not playlist or not playlist.get("tracks"):
-                continue
-            valid_count = sum(1 for t in playlist["tracks"] if t.get("videoId") and t.get("title"))
-            if valid_count > best_valid_count:
-                best = playlist
-                best_valid_count = valid_count
+    for playlist in results:
+        if not playlist:
+            continue
+        valid_count = sum(1 for t in playlist["tracks"] if t.get("videoId") and t.get("title"))
+        if valid_count > best_valid_count:
+            best = playlist
+            best_valid_count = valid_count
     return best
 
 
