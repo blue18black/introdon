@@ -394,21 +394,34 @@ def _extract_playlist_id(url_or_id):
     return None
 
 
-def _fetch_playlist_by_id(playlist_id, limit=200):
+def _fetch_playlist_by_id(playlist_id, limit=500):
     """get_playlist()は渡すIDの形式(先頭にVLが要るかどうか)がプレイリストの種類に
     よって異なるため、両方試す。英語ロケールのクライアントだとアーティスト名が
     ローマ字化される(例:「アンジュルム」→"ANGERME")ため、日本語ロケールの
-    _yt_jaで取得する(アーティスト名解決と同じ理由)。"""
+    _yt_jaで取得する(アーティスト名解決と同じ理由)。
+    継続トークンを使ったページ送りが、回線都合で時々ページの途中で静かに
+    打ち切られ、本来のトラック数より大幅に少ない結果を返すことがあった
+    (同じプレイリストで66件/218件のように取得結果がばらついた実例がある)。
+    playlist自身が申告するtrackCountと実際に取得できたtracks件数を比較し、
+    明らかに足りない場合は数回まで取得し直し、その中で最も多く取れた結果を使う。"""
     variants = [playlist_id]
     variants.append(playlist_id[2:] if playlist_id.startswith("VL") else "VL" + playlist_id)
-    for pid in variants:
-        try:
-            playlist = _yt_ja.get_playlist(pid, limit=limit)
-            if playlist and playlist.get("tracks"):
+    best = None
+    for _attempt in range(3):
+        for pid in variants:
+            try:
+                playlist = _yt_ja.get_playlist(pid, limit=limit)
+            except Exception:
+                continue
+            if not playlist or not playlist.get("tracks"):
+                continue
+            declared = playlist.get("trackCount") or 0
+            actual = len(playlist["tracks"])
+            if best is None or actual > len(best.get("tracks") or []):
+                best = playlist
+            if declared == 0 or actual >= declared:
                 return playlist
-        except Exception:
-            continue
-    return None
+    return best
 
 
 def _dedupe_playlist_tracks(tracks):
