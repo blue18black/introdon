@@ -289,23 +289,48 @@ const YTPlayers = (() => {
 
       // 「無音のまま曲が終わったのに、もう一度再生すると適切に流れる」という
       // 報告が繰り返しあった。同じ動画を初めてそのプレーヤーで読み込む時だけ
-      // バッファリングが追いつかず、2回目の読み込み(=もう一度再生)では既に
-      // ある程度バッファ済みで問題なく流れる、という「コールドスタート」特有の
-      // 問題とみられる。そこで最初から疑似的に「2回目の読み込み」を行う:
-      // 実際に音を出す前にcueVideoById()で一度読み込ませて少し間を置き、
-      // それから本番の読み込み(loadVideoById、上のstartPlayback)を行う。
-      // この待ち時間はカウントダウン開始より前なので、持ち時間は減らない。
-      // このプレーヤー番号での本当に最初の1回だけは、iframe自体もまだ
-      // コールドな状態(内部でYouTube側との接続が確立し切っていない)で
-      // 700msでも足りないことがある(「1問目だけまだ無音→もう一度再生で
-      // 直る、が起きる」の原因)。以降の再生では既にウォームアップ済みなので
-      // 短い方で構わない。
-      const PREBUFFER_DELAY_MS = warmedUpPlayers.has(playerIndex) ? 700 : 1800;
+      // バッファリングが追いつかず、2回目の読み込み(=もう一度再生/続きから
+      // 再生)では既にある程度バッファ済みで問題なく流れる、という
+      // 「コールドスタート」特有の問題とみられる。そこで最初から疑似的に
+      // 「2回目の読み込み」を行う: 実際に音を出す前にcueVideoById()で一度
+      // 読み込ませ、実際にバッファが進んだことを確認できてから本番の読み込み
+      // (loadVideoById、上のstartPlayback)を行う。この待ち時間はカウント
+      // ダウン開始より前なので、持ち時間は減らない。
+      // 固定の待ち時間では足りないケースが残っていた(1問目だけでなく、通常は
+      // 無音にならない曲の初回読み込みでも起きることがあった)ため、固定時間
+      // ではなく実際のバッファ状況(getPlayerState()がCUED/PAUSEDまで進んだ
+      // か、getVideoLoadedFraction()が実際に動き始めたか)を見て、本当に
+      // 準備できるまで待つようにする(待たされる分には構わないとのことなので、
+      // 上限を大きめに取る。それでも反応が無い場合の保険として上限は設ける)。
+      const waitUntilBuffered = (maxMs) => new Promise((resolveBuffer) => {
+        const startedAt = Date.now();
+        const check = () => {
+          if (settled) {
+            resolveBuffer();
+            return;
+          }
+          let state = null;
+          let frac = 0;
+          try { state = player.getPlayerState(); } catch (e) { /* noop */ }
+          try { frac = player.getVideoLoadedFraction(); } catch (e) { /* noop */ }
+          const ready = state === YT.PlayerState.CUED || state === YT.PlayerState.PAUSED || frac > 0.02;
+          if (ready || Date.now() - startedAt >= maxMs) {
+            resolveBuffer();
+            return;
+          }
+          setTimeout(check, 150);
+        };
+        check();
+      });
+      const PREBUFFER_MAX_WAIT_MS = warmedUpPlayers.has(playerIndex) ? 4000 : 6000;
       warmedUpPlayers.add(playerIndex);
       try {
         player.cueVideoById({ videoId, startSeconds: loadStartSeconds });
       } catch (e) { /* noop */ }
-      setTimeout(startPlayback, PREBUFFER_DELAY_MS);
+      waitUntilBuffered(PREBUFFER_MAX_WAIT_MS).then(() => {
+        if (settled) return;
+        startPlayback();
+      });
     });
   }
 
