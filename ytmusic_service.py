@@ -33,11 +33,19 @@ def _make_session():
     return session
 
 
-_yt = YTMusic(requests_session=_make_session())
+
+# ytmusicapiは、locationを明示しない場合サーバーのIPアドレスの所在地を
+# YouTube Musicへのリクエストの「発信地」として扱う。Render(シンガポール)に
+# デプロイした結果、同じアーティスト/プレイリストでもローカル(日本)と
+# 配信可否・検索結果が食い違い、特定のアーティストが全く再生できない、
+# カタログの内容自体が異なる、といった不具合が多数起きていた。location="JP"を
+# 明示することで、サーバーの物理的な所在地に関わらず日本からのリクエストとして
+# 扱わせる。
+_yt = YTMusic(requests_session=_make_session(), location="JP")
 # 英語ロケールのクライアントはアーティスト検索/曲検索結果で日本語アーティスト名を
 # ローマ字化してしまう(例: 「超ときめき♡宣伝部」→"Cho Tokimeki Sendenbu")ため、
 # 正式表記の解決だけは日本語ロケールのクライアントで行う(lyrics-quizと同じ手法)。
-_yt_ja = YTMusic(language="ja", requests_session=_make_session())
+_yt_ja = YTMusic(language="ja", requests_session=_make_session(), location="JP")
 
 INSTRUMENTAL_KEYWORDS = [
     "instrumental", "off vocal", "offvocal", "backing track",
@@ -440,10 +448,6 @@ def get_playlist_tracks(url_or_id):
 
 
 _DOMINANT_SONG_VOTES = 8
-# 完全一致するアーティストの票数がこれ未満の場合、「曲検索側が単にこの語で
-# ヒットしにくいだけ」とみなし、多数決側による上書きを許さない
-# (find_target_artist内のsong_dominates_exactのコメント参照)。
-_EXACT_MATCH_CONTEST_FLOOR = 2
 
 
 def find_target_artist(artist: str):
@@ -509,19 +513,19 @@ def find_target_artist(artist: str):
         # 同名の別チャンネル(ホモニム)が複数ある場合、曲検索側の票データに
         # 実際に出てくるものを優先する(実カタログを持つ本物である可能性が高い)。
         exact_match_id = max(exact_match_ids, key=lambda aid: counts.get(aid, 0))
-    exact_match_votes = counts.get(exact_match_id, 0) if exact_match_id else 0
 
     is_dominant = song_vote_count >= _DOMINANT_SONG_VOTES and song_vote_count >= runner_up_count * 1.5
 
+    # 以前は、曲検索側の票数が圧倒的な場合(song_dominates_exact)、完全一致する
+    # アーティスト名があってもそちらを上書きしていた。しかし「aiko」のような
+    # クエリでは、この曲名検索が本人(和製シンガー、11票)よりも「Jhené Aiko」
+    # (名前に"aiko"を含む米国の別アーティスト、23票)の方を多く拾ってしまい、
+    # 完全一致する本人チャンネルがあるにもかかわらず上書きされ、無関係な
+    # アーティストの曲ばかりになってしまう不具合があった。クエリと完全一致する
+    # アーティスト名がある場合は、それを最優先で信頼する(曲名検索側の票数による
+    # 上書きはしない)。
     if exact_match_id:
-        song_dominates_exact = (
-            song_vote_id
-            and song_vote_id != exact_match_id
-            and song_vote_count >= _DOMINANT_SONG_VOTES
-            and exact_match_votes >= _EXACT_MATCH_CONTEST_FLOOR
-            and song_vote_count >= exact_match_votes * 2
-        )
-        artist_id = song_vote_id if song_dominates_exact else exact_match_id
+        artist_id = exact_match_id
     elif song_vote_id and (song_vote_id == artist_search_id or is_dominant):
         artist_id = song_vote_id
     elif artist_search_id:
@@ -532,45 +536,16 @@ def find_target_artist(artist: str):
     if not artist_id:
         return None
 
-    # クエリ自体がこのアーティストの表記と完全一致していたなら、それをそのまま
-    # 正式名称として使う。get_artist()経由の名前解決に頼ると、日本語ロケール側の
-    # 取得がライブラリ内部のパースエラーで失敗して英語名にフォールバックして
-    # しまうことがあった(例:「いぎなり東北産」で検索したのに
-    # "THE MADE IN TOHOKU"になっていた不具合)。ユーザーが入力/選択した表記が
-    # 既に一致している以上、それより確実な情報源はない。
-    if exact_match_id and artist_id == exact_match_id:
-        return artist.strip(), artist_id
-
-    # 英語ロケールの検索結果は日本語アーティスト名をローマ字化し、逆に日本語ロケールは
-    # 欧米アーティスト名をカタカナ化してしまうため、両方取得して使い分ける。
-    def _get_ja_name():
-        try:
-            return _yt_ja.get_artist(artist_id).get("name")
-        except Exception:
-            return None
-
-    def _get_en_name():
-        try:
-            return _yt.get_artist(artist_id).get("name")
-        except Exception:
-            return None
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        ja_future = pool.submit(_get_ja_name)
-        en_future = pool.submit(_get_en_name)
-        ja_name = ja_future.result()
-        en_name = en_future.result()
-
-    # 以前は日本語ロケール側の名前がカタカナのみの場合、英語ロケール側の
-    # ローマ字名を優先していた(欧米アーティストが日本語ロケールでカタカナ
-    # 表記になってしまうケースの救済のため)。しかしこれだと「アンジュルム」
-    # のような、カタカナ表記自体が本来の(和製)名義であるアーティストまで
-    # 「ANGERME」のようなローマ字表記に訳されてしまっていた(本来の日本語名の
-    # アーティストは訳さないでほしい、との明示的な指摘)。カタカナ=外国人
-    # アーティストの音訳、とは限らないため、この推測ロジックはやめ、
-    # 日本語ロケール側の名前をそのまま優先する。
-    name = ja_name or en_name or artist
-    return name, artist_id
+    # 以前はget_artist()経由でロケールごとの正式名称を取得し直していたが、
+    # 日本語ロケール側の取得がライブラリ内部のパースエラーで失敗して英語名に
+    # フォールバックする(「いぎなり東北産」→"THE MADE IN TOHOKU")、カタカナ
+    # 名義を外国人アーティストの音訳と誤判定してローマ字化する(「アンジュルム」
+    # →"ANGERME")、「aiko」のような曖昧な名前で見当違いのアーティストの
+    # 表記に化ける、といった不具合を繰り返し起こしていた。ユーザーが入力/
+    # 選択した表記をそのまま正式名称として使う方が確実(「アーティスト名を
+    # そのまま採用する」との明示的な指摘)。artist_idの解決(検索結果の多数決)
+    # だけは引き続き行い、曲を取得するチャンネル自体は正しく特定する。
+    return artist.strip(), artist_id
 
 
 _SUGGESTION_NAME_CACHE = {}
