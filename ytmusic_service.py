@@ -422,14 +422,6 @@ def get_playlist_tracks(url_or_id):
     return {"playlistTitle": playlist.get("title") or "プレイリスト", "tracks": tracks}
 
 
-def _is_pure_katakana(s):
-    return bool(s) and all("゠" <= ch <= "ヿ" or ch in " ・-.'" for ch in s)
-
-
-def _is_ascii(s):
-    return bool(s) and all(ord(ch) < 128 for ch in s)
-
-
 _DOMINANT_SONG_VOTES = 8
 # 完全一致するアーティストの票数がこれ未満の場合、「曲検索側が単にこの語で
 # ヒットしにくいだけ」とみなし、多数決側による上書きを許さない
@@ -552,10 +544,15 @@ def find_target_artist(artist: str):
         ja_name = ja_future.result()
         en_name = en_future.result()
 
-    if ja_name and _is_pure_katakana(ja_name) and en_name and _is_ascii(en_name):
-        name = en_name
-    else:
-        name = ja_name or en_name or artist
+    # 以前は日本語ロケール側の名前がカタカナのみの場合、英語ロケール側の
+    # ローマ字名を優先していた(欧米アーティストが日本語ロケールでカタカナ
+    # 表記になってしまうケースの救済のため)。しかしこれだと「アンジュルム」
+    # のような、カタカナ表記自体が本来の(和製)名義であるアーティストまで
+    # 「ANGERME」のようなローマ字表記に訳されてしまっていた(本来の日本語名の
+    # アーティストは訳さないでほしい、との明示的な指摘)。カタカナ=外国人
+    # アーティストの音訳、とは限らないため、この推測ロジックはやめ、
+    # 日本語ロケール側の名前をそのまま優先する。
+    name = ja_name or en_name or artist
     return name, artist_id
 
 
