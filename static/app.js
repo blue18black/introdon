@@ -431,12 +431,9 @@
   // 勝手に取得が再開してしまっていた(明示的に再取得を選んでいないのに読み込みが
   // 始まる不具合)。このアーティストのスコープボタンを押す等、明示的な操作で
   // cancelledArtistKeysから削除されない限り、ここで取得をスキップする。
-  async function fetchArtistPool(name, scope) {
+  async function fetchArtistPoolCached(name, scope) {
     const key = `${name}::${scope}`;
-    // 以前はここで既に取得済みなら再取得をスキップしていたが、修正の反映確認中に
-    // 古い結果がいつまでも表示され続けて紛らわしい(「正しく反映されているか
-    // 確認できない」)との指摘があったため、毎回必ず取得し直すようにした
-    // (取得済みの一覧はState.artistTrackCacheに残し、「確認」プレビュー表示にのみ使う)。
+    if (State.artistTrackCache[key]) return State.artistTrackCache[key];
     if (cancelledArtistKeys.has(key)) return null;
     loadingArtistKeys.add(key);
     const controller = new AbortController();
@@ -453,7 +450,8 @@
   }
 
   // 選択中の全アーティストを、それぞれ指定された範囲で取得してマージする。
-  // 取得中の表示は全体ではなく、fetchArtistPool側でアーティストの行ごとに出す。
+  // 取得中の表示は(キャッシュ済みで一瞬で終わるものも多いため)全体ではなく
+  // fetchArtistPoolCached側でアーティストの行ごとに出す。
   async function refreshArtistPool() {
     const statusEl = $("artist-status");
     if (State.selectedArtists.length === 0) {
@@ -472,7 +470,7 @@
 
     const entries = State.selectedArtists.slice();
     const results = await Promise.allSettled(
-      entries.map((entry) => fetchArtistPool(entry.name, entry.scope))
+      entries.map((entry) => fetchArtistPoolCached(entry.name, entry.scope))
     );
 
     const merged = [];

@@ -263,6 +263,9 @@ def _clean_and_dedupe(tracks):
     return deduped
 
 
+_EMBEDDABLE_CACHE = {}
+
+
 def _is_embeddable(video_id):
     """YouTubeのoEmbedエンドポイントで、動画が埋め込み再生できるかを事前確認する。
     アップロード側が埋め込みを許可していない動画は401、削除/非公開になった動画は
@@ -281,6 +284,8 @@ def _is_embeddable(video_id):
     誤って曲を減らさないよう埋め込み可能とみなす(それでも本当に再生できない曲は、
     クイズ側の差し替えロジックが最終的な保険になる)。
     """
+    if video_id in _EMBEDDABLE_CACHE:
+        return _EMBEDDABLE_CACHE[video_id]
     url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
 
     def attempt():
@@ -303,6 +308,7 @@ def _is_embeddable(video_id):
                 time.sleep(0.5)
                 continue
             ok = True
+    _EMBEDDABLE_CACHE[video_id] = ok
     return ok
 
 
@@ -542,6 +548,9 @@ def find_target_artist(artist: str):
     return artist.strip(), artist_id
 
 
+_SUGGESTION_NAME_CACHE = {}
+
+
 def _search_with_retry(client, query, **kwargs):
     """並列リクエストが集中すると、YT Music(非公式API)の一部が一時的にリジェクト
     されることがある。1回だけ間を置いて再試行すると大半は回復する
@@ -571,8 +580,11 @@ def _resolve_suggestion_name(raw):
     「アーティスト名 曲名」形式の候補を、アーティストの正式名に解決する。
     find_target_artistより軽量(多数決の曲検索はせず、直接のアーティスト検索のみ)にし、
     候補(最大6件)を1文字入力するたびに解決してもレスポンスが遅くならないようにする。"""
+    if raw in _SUGGESTION_NAME_CACHE:
+        return _SUGGESTION_NAME_CACHE[raw]
     results = _search_with_retry(_yt_ja, raw, filter="artists", limit=1)
     resolved = results[0].get("artist") if results else None
+    _SUGGESTION_NAME_CACHE[raw] = resolved
     return resolved
 
 
@@ -640,12 +652,16 @@ def _collect_discography_entries(yt, artist, artist_id, section_key):
         return results
 
 
+_ARTIST_TRACKS_CACHE = {}
+
+
 def fetch_all_tracks(artist_id):
     """playlist_builder.py の get_artist_tracks を踏襲: アーティストの全アルバム/シングル
     収録曲を取得する。アルバムが多いアーティストほど逐次取得が遅くなるため、
-    lyrics-quizと同様に並列fetchで高速化する。以前はプロセス内キャッシュも
-    持っていたが、修正の反映確認中に古い結果がいつまでも返り続けて紛らわしい
-    (「正しく反映されているか確認できない」)との指摘があったため撤去した。"""
+    lyrics-quizと同様に並列fetch+キャッシュで高速化する。"""
+    if artist_id in _ARTIST_TRACKS_CACHE:
+        return _ARTIST_TRACKS_CACHE[artist_id]
+
     artist = _yt.get_artist(artist_id)
 
     album_entries = _collect_discography_entries(_yt, artist, artist_id, "albums")
@@ -710,6 +726,13 @@ def fetch_all_tracks(artist_id):
             raw_tracks.append(t)
             existing_ids.add(t["videoId"])
 
+    # 取得失敗/一時的な通信不調で空になった結果をキャッシュしてしまうと、
+    # 以後そのアーティストのあらゆる範囲(全曲/Top25/Top50/ミックスは全て
+    # ここを経由する)がサーバー再起動まで永久に「曲が見つかりませんでした」
+    # のままになってしまう(実際に本番でこの症状が起きた)。空の結果は
+    # キャッシュせず、次回のリクエストで取得し直せるようにする。
+    if raw_tracks:
+        _ARTIST_TRACKS_CACHE[artist_id] = raw_tracks
     return raw_tracks
 
 
@@ -827,6 +850,9 @@ def _resolve_track_quality(artist_name, track):
     return new_track, alt_view_count
 
 
+_ARTIST_RANKED_CACHE = {}
+
+
 def fetch_ranked_tracks(artist_id, artist_name):
     """Top25/Top50用のランキング。YouTube Music公式の「人気の曲」プレイリストは
     使わず、全曲(fetch_all_tracks)について曲ごとに再生回数を取得し、
@@ -842,6 +868,9 @@ def fetch_ranked_tracks(artist_id, artist_name):
     曲名にlive/ライブを含む曲や、カタログの申告時間と実際の動画の長さが大きく
     ズレている曲(データ不整合)は、_resolve_track_qualityでスタジオ版などの
     代わりへの差し替えを試み、見つからなければ除外する。"""
+    if artist_id in _ARTIST_RANKED_CACHE:
+        return _ARTIST_RANKED_CACHE[artist_id]
+
     raw = [t for t in fetch_all_tracks(artist_id) if t.get("videoId") and t.get("title")]
     raw = filter_instrumental(raw)
     raw = filter_medley(raw)
@@ -881,6 +910,10 @@ def fetch_ranked_tracks(artist_id, artist_name):
         deduped.append(t)
 
     ranked = sorted(deduped, key=lambda t: t["_viewCount"], reverse=True)
+    # 空の結果はキャッシュしない(fetch_all_tracksと同じ理由: 一時的な失敗を
+    # 永久に固定してしまわないため)。
+    if ranked:
+        _ARTIST_RANKED_CACHE[artist_id] = ranked
     return ranked
 
 
@@ -914,10 +947,13 @@ def _resolve_all_tracks_quality(tracks, artist_name):
     return result
 
 
+_ARTIST_MIX_CACHE = {}
+
+
 def _build_catalog_lookup(artist_id):
-    """アーティストの全曲カタログ(fetch_all_tracks)を曲名の正規化キーで
-    引けるようにする。シングル/アルバムの方を動画セクション(MV等)由来より
-    優先する(_pick_winnerと同じ考え方)。"""
+    """アーティストの全曲カタログ(fetch_all_tracks、キャッシュ済み)を曲名の
+    正規化キーで引けるようにする。シングル/アルバムの方を動画セクション
+    (MV等)由来より優先する(_pick_winnerと同じ考え方)。"""
     lookup = {}
     for t in fetch_all_tracks(artist_id):
         if not t.get("videoId") or not t.get("title"):
@@ -989,6 +1025,9 @@ def _fetch_official_mix_tracks(artist_id, artist_name):
     これを使う。get_watch_playlistが返すtrackの形はアルバム/プレイリスト由来の
     trackと項目名が違う(lengthが"4:28"形式の文字列、thumbnailが単数形)ため、
     他の関数と同じ形(duration_seconds/thumbnails)に合わせておく。"""
+    if artist_id in _ARTIST_MIX_CACHE:
+        return _ARTIST_MIX_CACHE[artist_id]
+
     shuffle_id = None
     for client in (_yt_ja, _yt):
         try:
@@ -1039,9 +1078,13 @@ def _fetch_official_mix_tracks(artist_id, artist_name):
         seen_titles.add(key)
         deduped.append(t)
 
+    # 空の結果はキャッシュしない(fetch_all_tracksと同じ理由)。
+    if deduped:
+        _ARTIST_MIX_CACHE[artist_id] = deduped
     return deduped
 
 
+_ARTIST_VIDEO_CACHE = {}
 _VIDEO_TITLE_RE = re.compile(r"[「『]([^」』]+)[」』]")
 _LIVE_VIDEO_RE = re.compile(r"live|tour|ライブ|ツアー", re.IGNORECASE)
 
@@ -1050,6 +1093,9 @@ def fetch_video_tracks(artist_id):
     """アルバム/シングルがYouTube Musicのカタログに登録されていないアーティスト向けの
     フォールバック: アーティストページの「動画」セクション(公式MVなど)のタイトル
     "<アーティスト>「<曲名>」..." から曲名を推測する(lyrics-quizと同じ手法)。"""
+    if artist_id in _ARTIST_VIDEO_CACHE:
+        return _ARTIST_VIDEO_CACHE[artist_id]
+
     artist = _yt.get_artist(artist_id)
     videos_section = artist.get("videos") or {}
     browse_id = videos_section.get("browseId")
@@ -1079,6 +1125,9 @@ def fetch_video_tracks(artist_id):
         track["year"] = "年不明"
         tracks.append(track)
 
+    # 空の結果はキャッシュしない(fetch_all_tracksと同じ理由)。
+    if tracks:
+        _ARTIST_VIDEO_CACHE[artist_id] = tracks
     return tracks
 
 
