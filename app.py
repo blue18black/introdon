@@ -1,8 +1,9 @@
 import os
 import socket
 import sys
+import time
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request
 
 import ytmusic_service
 
@@ -13,10 +14,23 @@ PORT = int(os.environ.get("PORT", 5000))
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
+# static/app.js等の修正を配信しても、ブラウザ側のキャッシュが古いバージョンを
+# 使い続けてしまい、修正が反映されているか確認できない/実は直っているのに
+# 直っていないように見える、という混乱が何度も起きていた。サーバー起動時刻を
+# クエリ文字列として静的ファイルのURLに付与し、デプロイ(再起動)のたびに
+# ブラウザが確実に最新のファイルを取りに行くようにする。
+_ASSET_VERSION = str(int(time.time()))
+with open("index.html", encoding="utf-8") as _f:
+    _INDEX_HTML = _f.read()
+for _asset in ("style.css", "api.js", "youtube-player.js", "quiz.js", "app.js"):
+    _INDEX_HTML = _INDEX_HTML.replace(
+        f'/static/{_asset}"', f'/static/{_asset}?v={_ASSET_VERSION}"'
+    )
+
 
 @app.route("/")
 def index():
-    return send_from_directory(".", "index.html")
+    return _INDEX_HTML
 
 
 @app.route("/api/artist_suggest")
