@@ -8,6 +8,8 @@ import functools
 import re
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -240,17 +242,17 @@ _EMBEDDABLE_CACHE = {}
 
 
 def _is_embeddable(video_id):
-    """YouTube自身のplayabilityStatus(get_song()経由で取得できる、実際の
-    プレーヤーが再生可否判定に使うのと同じ情報源)を見て、本当に再生できるかを
-    事前確認する。status=="OK"かどうかで一般的な再生可否(地域制限・削除・
-    非公開等)を、playableInEmbedで「自サイトへの埋め込み再生」が個別に
-    許可されているかを見る――これは一般的な再生可否とは別に、アップロード側
-    (特に公式レーベルのチャンネルに多い)が明示的に埋め込みだけを禁止して
-    いることがあり、statusだけを見ているとすり抜けて「再生できませんでした」
-    の原因になっていたため(以前使っていたoEmbedの401はこの埋め込み可否だけを
-    見ていたが、地域制限等の一般的な再生不可は見えていなかった。両方の
-    シグナルを1回のget_song()呼び出しでまとめて見られるここに統合した)。
-    通信自体の失敗(タイムアウト等)は、曲数の多いアーティストを一気に並列
+    """YouTubeのoEmbedエンドポイントで、動画が埋め込み再生できるかを事前確認する。
+    アップロード側が埋め込みを許可していない動画は401、削除/非公開になった動画は
+    404を返す--これがイントロクイズで「曲が流れない」の大半の原因(youtube-player.js
+    のonErrorで検出しているのと同じ制約)。ここで弾いておくことで、出題時にその
+    問題に当たる頻度そのものを減らす。
+    一度get_song()(playabilityStatus)ベースに切り替えたが、曲数の多い
+    アーティストで大量に並列実行するとYouTube側の(HTTPエラーにはならない
+    "ソフトな")レート制限に引っかかり、全曲が判定不能になって0曲扱いに
+    なってしまう不具合が実際に起きた(私立恵比寿中学で発生)。oEmbedは
+    もっと軽量で、大量チェックでもこの問題が起きなかったため元に戻す。
+    401/404以外の失敗(タイムアウト等)は、曲数の多いアーティストを一気に並列
     チェックした時にYouTube側から一時的にレート制限され、本来「再生不可」なはずの
     曲まで「念のため再生可能扱い」になってしまうことがあった。取得が遅くなっても
     正確さを優先し、間を置いて1回だけ再試行してから、それでも判定できない場合だけ
@@ -259,18 +261,22 @@ def _is_embeddable(video_id):
     """
     if video_id in _EMBEDDABLE_CACHE:
         return _EMBEDDABLE_CACHE[video_id]
+    url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
 
     def attempt():
-        details = _yt.get_song(video_id)
-        ps = details.get("playabilityStatus") or {}
-        if ps.get("status") != "OK":
-            return False
-        return ps.get("playableInEmbed") is not False
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=4) as res:
+            return res.status == 200
 
     ok = True
     for i in range(2):
         try:
             ok = attempt()
+            break
+        except urllib.error.HTTPError as e:
+            # 401(埋め込み不可)/404(動画が存在しない)は確実な「再生不可」シグナルなので
+            # 再試行しても意味がない。
+            ok = e.code not in (401, 404)
             break
         except Exception:
             if i == 0:
