@@ -6,7 +6,7 @@
   const State = {
     source: "artist",
     pool: null,
-    selectedArtists: [], // 複数指定できるアーティスト名のリスト
+    selectedArtists: [], // 常に0件か1件(単一アーティストのみ選択可能)
     artistPool: null, // 選択中の全アーティストをマージした曲プール
     artistTrackCache: {}, // `${name}::${scope}` -> {artistName, tracks}
     playlistPool: null, // 読み込んだプレイリストの曲プール
@@ -197,7 +197,7 @@
     $("playlist-status").textContent = `${saved.playlistTitle}: ${saved.tracks.length}曲(前回読み込み分)`;
   })();
 
-  // ---- アーティスト検索(サジェスト付きライブ検索、複数指定可) ----
+  // ---- アーティスト検索(サジェスト付きライブ検索) ----
   const artistInput = $("artist-input");
   const artistClearBtn = $("artist-clear-btn");
   const artistSuggestionsEl = $("artist-suggestions");
@@ -349,15 +349,15 @@
     }
   });
 
-  // アーティストを1件、取得範囲(既定Top25)付きで選択リストに追加する。
-  // 複数回呼べば複数アーティストを指定できる(同名は追加しない)。
+  // アーティストを1件、取得範囲(既定Top25)付きで選択する。複数アーティストの
+  // 同時指定はできず、新たに選ぶとそれまでの選択を置き換える。
   function confirmArtist(name) {
     artistInput.value = "";
     artistClearBtn.classList.add("hidden");
     hideSuggestions();
     artistInput.focus();
-    if (State.selectedArtists.some((a) => a.name === name)) return;
-    State.selectedArtists.push({ name, scope: "top25" });
+    if (State.selectedArtists.length === 1 && State.selectedArtists[0].name === name) return;
+    State.selectedArtists = [{ name, scope: "top25" }];
     renderArtistEntries();
     refreshArtistPool();
   }
@@ -882,8 +882,17 @@
     playCurrentClip({ isFirstPlay: true, retriesLeft: 20 });
   }
 
+  // 同じ曲の読み込みが(一時的な回線都合などで)たまたま失敗した場合に、
+  // 自動でこの回数まで再挑戦する。「数秒遅れて鳴り始める」「もう一度再生を
+  // 何度も手動で押さないと鳴らない」という状態は、待たせてでも絶対に
+  // ユーザーに晒さないでほしいとの明示的な指摘があったため、失敗を表に
+  // 出す前にアプリ側で自動的に粘れるだけ粘る。この間、再生できない曲
+  // (brokenVideoIds)への追加もまだ行わない(一時的な失敗を恒久的な
+  // 再生不可と誤って記録してしまわないようにするため)。
+  const SAME_TRACK_AUTO_RETRIES = 5;
+
   // 現在の問題のクリップを(再生ボタン/少し先から再生ボタンからの再再生も含めて)再生する。
-  function playCurrentClip({ isFirstPlay = false, retriesLeft = 0 } = {}) {
+  function playCurrentClip({ isFirstPlay = false, retriesLeft = 0, sameTrackRetriesLeft = SAME_TRACK_AUTO_RETRIES } = {}) {
     if (playbackBusy || !currentPlaybackPlan) return;
     playbackBusy = true;
     const { videoIds, startSecondsList, playSeconds } = currentPlaybackPlan;
@@ -915,6 +924,16 @@
       countdownEl.classList.remove("is-waiting");
       visual.classList.add("is-idle");
       const anyError = results.some((r) => r.error);
+
+      // まずは同じ曲のまま自動で再挑戦する(ユーザーの手動操作なしに)。
+      if (anyError && sameTrackRetriesLeft > 0) {
+        playbackBusy = false;
+        playCurrentClip({ isFirstPlay, retriesLeft, sameTrackRetriesLeft: sameTrackRetriesLeft - 1 });
+        return;
+      }
+
+      // ここまで来て初めて、本当に再生できない曲だった可能性が高いと判断し、
+      // 再生不可リストへ記録する(次回以降の出題プールから除外するため)。
       if (anyError) {
         videoIds.forEach((id) => State.brokenVideoIds.add(id));
         saveBrokenVideoIdsToStorage(State.brokenVideoIds);

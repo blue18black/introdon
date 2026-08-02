@@ -58,6 +58,10 @@ _TRAILING_VARIANT_RE = re.compile(
 )
 _BRACKET_RE = re.compile(r"[\(\[（【]")
 _PAIRED_HYPHEN_RE = re.compile(r"-[^-]+-")
+# タイトル末尾の"-Moe Shop Remix-"「-TV Size-」のような、ハイフンで挟んだ
+# バージョン表記だけを対象にする(文字列途中の"eye-to-eye"のような通常の
+# ハイフン使用を誤って削らないよう、末尾に限定する)。
+_TRAILING_PAIRED_HYPHEN_RE = re.compile(r"-[^-]+-\s*$")
 
 
 def is_instrumental(title: str) -> bool:
@@ -112,6 +116,7 @@ def normalize_title(title: str) -> str:
     t = re.sub(r"[\(\[（【].*?[\)\]）】]", "", t)
     t = re.sub(r"feat\.?.*", "", t)
     t = _TRAILING_VARIANT_RE.sub("", t)
+    t = _TRAILING_PAIRED_HYPHEN_RE.sub("", t)
     t = re.sub(r"[^\w\s]", "", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
@@ -123,6 +128,7 @@ def strip_variant_for_display(title: str) -> str:
     t = re.sub(r"[\(\[（【].*?[\)\]）】]", "", t)
     t = re.sub(r"feat\.?.*", "", t, flags=re.IGNORECASE)
     t = _TRAILING_VARIANT_RE.sub("", t)
+    t = _TRAILING_PAIRED_HYPHEN_RE.sub("", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t or title.strip()
 
@@ -193,12 +199,50 @@ def filter_medley(tracks):
     return [t for t in tracks if not is_medley_title(t["title"])]
 
 
+def _dedupe_group_key(title):
+    """タイトルのグルーピングキー。normalize_titleは"(Live at 会場 日付)"の
+    ような括弧書きを装飾情報とみなして丸ごと除去するため、通常版と
+    ライブ音源が同じキーに収束してしまうことがあった(例:「ラヴなのっ♡」
+    (通常盤・OMV)と「ラヴなのっ (Live at Nakano Sunplaza 2021/12/26)」
+    (ATV)が同一グループになり、ATV優先ヒューリスティックにより誤って
+    ライブ音源の方が勝者として選ばれてしまっていた)。ライブ音源は別キーに
+    退避し、通常版のグループに混ざらないようにする。"""
+    key = normalize_title(title)
+    if is_live_recording(title):
+        key += "__live"
+    return key
+
+
+def _dedupe_by_video_id_prefer_native(tracks):
+    """同じvideoIdに対して、カタログ側が日本語タイトルとローマ字/英語/他言語の
+    別題を別々の行として持っていることがある(1動画に複数の言語違いの題名が
+    クレジットされているケース)。タイトルベースの重複解決より前にvideoId単位で
+    1行に絞り込んでおかないと、後段のタイトル正規化ではまるで別の曲であるかの
+    ように扱われてしまい、稀に非日本語表記の方が勝者として残ってしまうことが
+    あった(例:「すきっ！」が「SUKI! English ver.」として表示される)。
+    日本語(非ASCII文字を含む)タイトルを優先し、無ければ最初に出てきたものを使う。"""
+    best_by_id = {}
+    order = []
+    for t in tracks:
+        vid = t["videoId"]
+        if vid not in best_by_id:
+            best_by_id[vid] = t
+            order.append(vid)
+            continue
+        current = best_by_id[vid]
+        current_native = any(ord(ch) > 127 for ch in current["title"])
+        candidate_native = any(ord(ch) > 127 for ch in t["title"])
+        if candidate_native and not current_native:
+            best_by_id[vid] = t
+    return [best_by_id[vid] for vid in order]
+
+
 def resolve_duplicates(tracks):
     """タイトルの表記ゆれ重複を検出し、優先順位ルールで1曲に絞り込む(playlist_builder.pyと同ロジック)。"""
     key_by_video_id = {}
     groups = defaultdict(list)
     for t in tracks:
-        key = normalize_title(t["title"])
+        key = _dedupe_group_key(t["title"])
         key_by_video_id[t["videoId"]] = key
         groups[key].append(t)
 
@@ -256,6 +300,8 @@ def _clean_and_dedupe(tracks):
         t = dict(t)
         t["title"] = clean_title(t["title"])
         cleaned.append(t)
+
+    cleaned = _dedupe_by_video_id_prefer_native(cleaned)
 
     tracks = resolve_duplicates(cleaned)
 
@@ -903,16 +949,21 @@ def fetch_ranked_tracks(artist_id, artist_name):
         t["_approxViewCount"] = _parse_views_str(t.get("views"))
         candidates.append(t)
 
+    candidates = _dedupe_by_video_id_prefer_native(candidates)
+
     # 概算の再生回数だけでグルーピング・仮の勝者選出を行う(通信不要)。
     # MV(OMV)は曲が始まる前に別シーンが入っていることがあるため、同じ曲で
     # あれば音源版(ATV)を優先する(再生回数より優先する明示的な指摘があった)。
     approx_groups = defaultdict(list)
     for t in candidates:
-        approx_groups[normalize_title(t["title"])].append(t)
+        approx_groups[_dedupe_group_key(t["title"])].append(t)
     approx_winners = [
         max(
             {t["videoId"]: t for t in group}.values(),
-            key=lambda t: (0 if _is_omv(t) else 1, t["_approxViewCount"]),
+            # Remix/TV Sizeなどのバージョン表記が付いた動画より、素のタイトルの
+            # 動画を優先する(同じ曲が"-Moe Shop Remix-"等の別動画として重複した
+            # まま残ってしまう不具合の対策)。
+            key=lambda t: (0 if _is_omv(t) else 1, 0 if _has_variant_qualifier(t["title"]) else 1, t["_approxViewCount"]),
         )
         for group in approx_groups.values()
     ]
@@ -931,12 +982,12 @@ def fetch_ranked_tracks(artist_id, artist_name):
 
     groups = defaultdict(list)
     for t in tracks:
-        groups[normalize_title(t["title"])].append(t)
+        groups[_dedupe_group_key(t["title"])].append(t)
 
     winners = []
     for group in groups.values():
         unique = list({t["videoId"]: t for t in group}.values())
-        winner = dict(max(unique, key=lambda t: (0 if _is_omv(t) else 1, t["_viewCount"])))
+        winner = dict(max(unique, key=lambda t: (0 if _is_omv(t) else 1, 0 if _has_variant_qualifier(t["title"]) else 1, t["_viewCount"])))
         winner["title"] = strip_variant_for_display(winner["title"])
         winners.append(winner)
 
