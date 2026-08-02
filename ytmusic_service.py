@@ -828,6 +828,40 @@ def _resolve_track_quality(artist_name, track):
     return new_track, alt_view_count
 
 
+_VIEWS_STR_RE = re.compile(r"([\d.,]+)\s*([KM]?)", re.IGNORECASE)
+
+
+def _parse_views_str(s):
+    """カタログのtrack辞書に既に入っている"views"表記(例:"268K plays"、
+    "6.2M plays"、"1,234 plays")を概算の整数に変換する。曲数の多い
+    アーティストで曲ごとに再生回数を取得し直す(1曲1通信)のは重すぎ、
+    Render環境ではタイムアウトして0曲になってしまうことがあった
+    (私立恵比寿中学のTop25/Top50で発生)。この概算値を使えば通信無しで
+    ランキングの絞り込みができ、実際の通信(_resolve_track_quality)は
+    絞り込んだ後の候補だけで済む。"""
+    if not s:
+        return 0
+    m = _VIEWS_STR_RE.search(s)
+    if not m:
+        return 0
+    try:
+        num = float(m.group(1).replace(",", ""))
+    except ValueError:
+        return 0
+    suffix = m.group(2).upper()
+    if suffix == "K":
+        num *= 1_000
+    elif suffix == "M":
+        num *= 1_000_000
+    return int(num)
+
+
+# 再生回数(概算)による絞り込み後、実際に通信して正確な再生回数・品質確認を
+# 行う候補数の上限。Top25/Top50どちらでもこれだけあれば、埋め込み不可な曲の
+# 補充分も含めて十分足りる。
+_RANKED_QUALITY_CHECK_LIMIT = 120
+
+
 def fetch_ranked_tracks(artist_id, artist_name):
     """Top25/Top50用のランキング。YouTube Music公式の「人気の曲」プレイリストは
     使わず、全曲(fetch_all_tracks)について曲ごとに再生回数を取得し、
@@ -842,7 +876,11 @@ def fetch_ranked_tracks(artist_id, artist_name):
 
     曲名にlive/ライブを含む曲や、カタログの申告時間と実際の動画の長さが大きく
     ズレている曲(データ不整合)は、_resolve_track_qualityでスタジオ版などの
-    代わりへの差し替えを試み、見つからなければ除外する。"""
+    代わりへの差し替えを試み、見つからなければ除外する。
+
+    正確な再生回数の取得(1曲ごとに通信)は、曲数の多いアーティストだと全曲分
+    行うには重すぎるため、まずカタログに既に入っている概算のviews表記だけで
+    絞り込んでから、その上位候補だけ正確な値を取りに行く2段階構成にしている。"""
     raw = [t for t in fetch_all_tracks(artist_id) if t.get("videoId") and t.get("title")]
     raw = filter_instrumental(raw)
     raw = filter_medley(raw)
@@ -850,10 +888,22 @@ def fetch_ranked_tracks(artist_id, artist_name):
     for t in raw:
         t = dict(t)
         t["title"] = clean_title(t["title"])
+        t["_approxViewCount"] = _parse_views_str(t.get("views"))
         candidates.append(t)
 
+    # 概算の再生回数だけでグルーピング・仮の勝者選出を行う(通信不要)。
+    approx_groups = defaultdict(list)
+    for t in candidates:
+        approx_groups[normalize_title(t["title"])].append(t)
+    approx_winners = [
+        max({t["videoId"]: t for t in group}.values(), key=lambda t: t["_approxViewCount"])
+        for group in approx_groups.values()
+    ]
+    approx_winners.sort(key=lambda t: t["_approxViewCount"], reverse=True)
+    shortlist = approx_winners[:_RANKED_QUALITY_CHECK_LIMIT]
+
     with ThreadPoolExecutor(max_workers=8) as pool:
-        resolved = list(pool.map(lambda t: _resolve_track_quality(artist_name, t), candidates))
+        resolved = list(pool.map(lambda t: _resolve_track_quality(artist_name, t), shortlist))
 
     tracks = []
     for new_track, view_count in resolved:
