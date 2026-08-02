@@ -58,6 +58,32 @@
   // ---- プレイリストのURL指定 ----
   const playlistInput = $("playlist-input");
 
+  // 読み込んだプレイリストは、キャッシュ(ページを閉じたら消えてよい・速さのため
+  // のもの)とは別に、ページを閉じても残しておきたいとの要望があったため
+  // localStorageに保存する。毎回URLを貼り直して読み込み直す手間を省く。
+  const PLAYLIST_STORAGE_KEY = "introdon.lastPlaylist.v1";
+
+  function savePlaylistToStorage(url, playlistTitle, tracks) {
+    try {
+      localStorage.setItem(PLAYLIST_STORAGE_KEY, JSON.stringify({ url, playlistTitle, tracks }));
+    } catch (e) { /* noop: 保存容量オーバー等は無視してよい */ }
+  }
+
+  function loadPlaylistFromStorage() {
+    try {
+      const raw = localStorage.getItem(PLAYLIST_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function clearPlaylistStorage() {
+    try {
+      localStorage.removeItem(PLAYLIST_STORAGE_KEY);
+    } catch (e) { /* noop */ }
+  }
+
   async function loadPlaylistPool() {
     const url = playlistInput.value.trim();
     const statusEl = $("playlist-status");
@@ -82,6 +108,7 @@
       State.lastPlaylistTitle = result.playlistTitle;
       if (State.source === "playlist") State.pool = State.playlistPool;
       statusEl.textContent = `${result.playlistTitle}: ${result.tracks.length}曲 取得しました`;
+      savePlaylistToStorage(url, result.playlistTitle, result.tracks);
     } catch (err) {
       statusEl.textContent = `取得に失敗しました: ${err.message}`;
       statusEl.classList.add("is-error");
@@ -113,8 +140,22 @@
     const statusEl = $("playlist-status");
     statusEl.textContent = "";
     statusEl.classList.remove("is-error");
+    clearPlaylistStorage();
     updateStartButtonState();
   });
+
+  // ページ読み込み時、前回読み込んだプレイリストが保存されていれば復元する
+  // (再取得はせず、保存済みの曲一覧をそのまま使う)。
+  (() => {
+    const saved = loadPlaylistFromStorage();
+    if (!saved || !saved.tracks || saved.tracks.length === 0) return;
+    playlistInput.value = saved.url || "";
+    playlistClearBtn.classList.toggle("hidden", !saved.url);
+    State.playlistPool = saved.tracks;
+    State.lastPlaylistTitle = saved.playlistTitle || "";
+    if (State.source === "playlist") State.pool = State.playlistPool;
+    $("playlist-status").textContent = `${saved.playlistTitle}: ${saved.tracks.length}曲(前回読み込み分)`;
+  })();
 
   // ---- アーティスト検索(サジェスト付きライブ検索、複数指定可) ----
   const artistInput = $("artist-input");

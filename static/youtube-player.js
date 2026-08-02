@@ -255,33 +255,50 @@ const YTPlayers = (() => {
         }
       };
 
+      const startPlayback = () => {
+        load();
+
+        // 生成直後のプレーヤーは(特にセッション最初の数曲)YouTube側の初期化待ちで
+        // PLAYINGイベントが来ないまま無音で止まっていることがある。少し待っても
+        // 反応がなければ読み込み直しを試みる。ただしこの時点で実際にはもう
+        // BUFFERING/PLAYINGまで進んでいる(単にイベント通知が遅れているだけの)
+        // ケースまで読み込み直すと、鳴り始めた曲を自ら中断させてしまう
+        // (「曲が途中で切れる」原因になる)。getPlayerState()で本当に止まって
+        // いそうな場合だけ読み込み直す。
+        setTimeout(() => {
+          if (settled || started || retried) return;
+          let state = null;
+          try { state = player.getPlayerState(); } catch (e) { /* noop */ }
+          if (state === YT.PlayerState.BUFFERING || state === YT.PlayerState.PLAYING) return;
+          retried = true;
+          load();
+        }, 3000);
+
+        // それでも(PLAYING状態への遷移すら)反応がなければ、本当に再生できて
+        // いない可能性が高いので失敗として扱う(以前はここでbegin()して
+        // 「再生成功」扱いにしていたが、無音のまま何も鳴らずに終わる曲を
+        // 検出できず、差し替えが働かない不具合があった)。
+        setTimeout(() => {
+          if (!settled && !started) onError();
+        }, 7000);
+      };
+
       player.addEventListener("onStateChange", onStateChange);
       player.addEventListener("onError", onError);
-      load();
 
-      // 生成直後のプレーヤーは(特にセッション最初の数曲)YouTube側の初期化待ちで
-      // PLAYINGイベントが来ないまま無音で止まっていることがある。少し待っても
-      // 反応がなければ読み込み直しを試みる。ただしこの時点で実際にはもう
-      // BUFFERING/PLAYINGまで進んでいる(単にイベント通知が遅れているだけの)
-      // ケースまで読み込み直すと、鳴り始めた曲を自ら中断させてしまう
-      // (「曲が途中で切れる」原因になる)。getPlayerState()で本当に止まって
-      // いそうな場合だけ読み込み直す。
-      setTimeout(() => {
-        if (settled || started || retried) return;
-        let state = null;
-        try { state = player.getPlayerState(); } catch (e) { /* noop */ }
-        if (state === YT.PlayerState.BUFFERING || state === YT.PlayerState.PLAYING) return;
-        retried = true;
-        load();
-      }, 3000);
-
-      // それでも(PLAYING状態への遷移すら)反応がなければ、本当に再生できて
-      // いない可能性が高いので失敗として扱う(以前はここでbegin()して
-      // 「再生成功」扱いにしていたが、無音のまま何も鳴らずに終わる曲を
-      // 検出できず、差し替えが働かない不具合があった)。
-      setTimeout(() => {
-        if (!settled && !started) onError();
-      }, 7000);
+      // 「無音のまま曲が終わったのに、もう一度再生すると適切に流れる」という
+      // 報告が繰り返しあった。同じ動画を初めてそのプレーヤーで読み込む時だけ
+      // バッファリングが追いつかず、2回目の読み込み(=もう一度再生)では既に
+      // ある程度バッファ済みで問題なく流れる、という「コールドスタート」特有の
+      // 問題とみられる。そこで最初から疑似的に「2回目の読み込み」を行う:
+      // 実際に音を出す前にcueVideoById()で一度読み込ませて少し間を置き、
+      // それから本番の読み込み(loadVideoById、上のstartPlayback)を行う。
+      // この待ち時間はカウントダウン開始より前なので、持ち時間は減らない。
+      const PREBUFFER_DELAY_MS = 700;
+      try {
+        player.cueVideoById({ videoId, startSeconds: loadStartSeconds });
+      } catch (e) { /* noop */ }
+      setTimeout(startPlayback, PREBUFFER_DELAY_MS);
     });
   }
 
