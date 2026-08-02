@@ -142,6 +142,15 @@ def _year_value(year):
         return float("-inf")
 
 
+def _is_omv(track):
+    """MUSIC_VIDEO_TYPE_OMV(公式ミュージックビデオ)かどうかを見る。MVは曲が
+    始まる前にセリフ・効果音等の別シーンが入っていることがあり、そこが
+    「1問目の答え」として流れてしまう(イントロクイズとして不適切)。純粋な
+    音源(MUSIC_VIDEO_TYPE_ATV)の方が同じ曲であれば優先したい、との明示的な
+    指摘があったため、選定時にこれを避けるようにする。"""
+    return track.get("videoType") == "MUSIC_VIDEO_TYPE_OMV"
+
+
 def _pick_winner(unique):
     plain = [t for t in unique if not _has_variant_qualifier(t["title"])]
     candidates = plain if plain else unique
@@ -154,6 +163,9 @@ def _pick_winner(unique):
             # 由来のtype=""(fetch_video_tracks参照)が先頭に来て誤って勝ってしまう
             # ことがあった。
             1 if t.get("type") in ("シングル・EP", "アルバム") else 0,
+            # MV(OMV)は曲が始まる前に別シーンが入っていることがあるため、
+            # 同じ曲であれば音源版(ATV)を優先する。
+            0 if _is_omv(t) else 1,
             _year_value(t.get("year")),
             1 if t.get("type") == "シングル・EP" else 0,
             1 if "通常盤" in (t.get("album") or "") else 0,
@@ -892,11 +904,16 @@ def fetch_ranked_tracks(artist_id, artist_name):
         candidates.append(t)
 
     # 概算の再生回数だけでグルーピング・仮の勝者選出を行う(通信不要)。
+    # MV(OMV)は曲が始まる前に別シーンが入っていることがあるため、同じ曲で
+    # あれば音源版(ATV)を優先する(再生回数より優先する明示的な指摘があった)。
     approx_groups = defaultdict(list)
     for t in candidates:
         approx_groups[normalize_title(t["title"])].append(t)
     approx_winners = [
-        max({t["videoId"]: t for t in group}.values(), key=lambda t: t["_approxViewCount"])
+        max(
+            {t["videoId"]: t for t in group}.values(),
+            key=lambda t: (0 if _is_omv(t) else 1, t["_approxViewCount"]),
+        )
         for group in approx_groups.values()
     ]
     approx_winners.sort(key=lambda t: t["_approxViewCount"], reverse=True)
@@ -919,7 +936,7 @@ def fetch_ranked_tracks(artist_id, artist_name):
     winners = []
     for group in groups.values():
         unique = list({t["videoId"]: t for t in group}.values())
-        winner = dict(max(unique, key=lambda t: t["_viewCount"]))
+        winner = dict(max(unique, key=lambda t: (0 if _is_omv(t) else 1, t["_viewCount"])))
         winner["title"] = strip_variant_for_display(winner["title"])
         winners.append(winner)
 
@@ -965,18 +982,26 @@ def _resolve_all_tracks_quality(tracks, artist_name):
     return result
 
 
+def _catalog_entry_score(t):
+    """シングル/アルバムの方を動画セクション(MV等)由来より、音源版(ATV)の
+    方をMV(OMV、曲が始まる前に別シーンが入っていることがある)より優先する
+    (_pick_winnerと同じ考え方)。"""
+    return (
+        1 if t.get("type") in ("シングル・EP", "アルバム") else 0,
+        0 if _is_omv(t) else 1,
+    )
+
+
 def _build_catalog_lookup(artist_id):
     """アーティストの全曲カタログ(fetch_all_tracks)を曲名の正規化キーで
-    引けるようにする。シングル/アルバムの方を動画セクション(MV等)由来より
-    優先する(_pick_winnerと同じ考え方)。"""
+    引けるようにする。"""
     lookup = {}
     for t in fetch_all_tracks(artist_id):
         if not t.get("videoId") or not t.get("title"):
             continue
         key = normalize_title(t["title"])
-        is_catalog = t.get("type") in ("シングル・EP", "アルバム")
         existing = lookup.get(key)
-        if existing is None or (is_catalog and existing.get("type") not in ("シングル・EP", "アルバム")):
+        if existing is None or _catalog_entry_score(t) > _catalog_entry_score(existing):
             lookup[key] = t
     return lookup
 
@@ -993,17 +1018,23 @@ def _resolve_mix_track(artist_name, mix_track, catalog_match):
     シャッフル側で起きているケース)に限り、カタログ上の同名シングル/
     アルバムを次点の候補として試す(例:「WAO！アオハル！」)。
     どちらも壊れている/ライブ版だった場合は_find_studio_alternativeで検索し、
-    それでも見つからなければNoneを返す(除外)。"""
+    それでも見つからなければNoneを返す(除外)。
+    MV(OMV、曲が始まる前に別シーンが入っていることがある)より音源版(ATV)を
+    優先したいとの指摘があったため、シャッフル自身の選択を尊重する原則は
+    保ちつつ、非OMVの候補があれば先に試す(同じOMV可否であれば従来通り
+    シャッフル自身の選択を優先する)。"""
     candidates = [{
         "videoId": mix_track["videoId"],
         "title": mix_track["title"],
         "duration_seconds": mix_track.get("duration_seconds"),
+        "videoType": mix_track.get("videoType"),
     }]
     if catalog_match and catalog_match.get("videoId") and catalog_match.get("type") in ("シングル・EP", "アルバム"):
         candidates.append({
             "videoId": catalog_match["videoId"],
             "title": catalog_match.get("title") or mix_track["title"],
             "duration_seconds": catalog_match.get("duration_seconds"),
+            "videoType": catalog_match.get("videoType"),
         })
     seen_vids = set()
     uniq_candidates = []
@@ -1012,6 +1043,7 @@ def _resolve_mix_track(artist_name, mix_track, catalog_match):
             continue
         seen_vids.add(c["videoId"])
         uniq_candidates.append(c)
+    uniq_candidates.sort(key=lambda c: 0 if _is_omv(c) else 1, reverse=True)
 
     for c in uniq_candidates:
         if is_live_recording(c["title"]):

@@ -4,6 +4,7 @@ const YTPlayers = (() => {
   const pool = []; // YT.Player instances
   const activeCancel = []; // pool[i]に対応する、進行中のplayOne()を打ち切る関数(なければnull)
   let nextPlayerIndex = 0;
+  const warmedUpPlayers = new Set(); // 一度でも実際に再生を試みたplayerIndex
 
   function loadApi() {
     if (apiReadyPromise) return apiReadyPromise;
@@ -294,7 +295,13 @@ const YTPlayers = (() => {
       // 実際に音を出す前にcueVideoById()で一度読み込ませて少し間を置き、
       // それから本番の読み込み(loadVideoById、上のstartPlayback)を行う。
       // この待ち時間はカウントダウン開始より前なので、持ち時間は減らない。
-      const PREBUFFER_DELAY_MS = 700;
+      // このプレーヤー番号での本当に最初の1回だけは、iframe自体もまだ
+      // コールドな状態(内部でYouTube側との接続が確立し切っていない)で
+      // 700msでも足りないことがある(「1問目だけまだ無音→もう一度再生で
+      // 直る、が起きる」の原因)。以降の再生では既にウォームアップ済みなので
+      // 短い方で構わない。
+      const PREBUFFER_DELAY_MS = warmedUpPlayers.has(playerIndex) ? 700 : 1800;
+      warmedUpPlayers.add(playerIndex);
       try {
         player.cueVideoById({ videoId, startSeconds: loadStartSeconds });
       } catch (e) { /* noop */ }
