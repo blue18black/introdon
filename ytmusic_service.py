@@ -400,14 +400,18 @@ def _fetch_playlist_by_id(playlist_id, limit=500):
     ローマ字化される(例:「アンジュルム」→"ANGERME")ため、日本語ロケールの
     _yt_jaで取得する(アーティスト名解決と同じ理由)。
     継続トークンを使ったページ送りが、回線都合で時々ページの途中で静かに
-    打ち切られ、本来のトラック数より大幅に少ない結果を返すことがあった
-    (同じプレイリストで66件/218件のように取得結果がばらついた実例がある)。
-    playlist自身が申告するtrackCountと実際に取得できたtracks件数を比較し、
-    明らかに足りない場合は数回まで取得し直し、その中で最も多く取れた結果を使う。"""
+    打ち切られ、本来のトラック数より大幅に少ない結果を返すことがあった。
+    さらに、playlist自身が申告するtrackCountや、どのトラックが
+    videoId欠落(isAvailable=false)として返るかも、取得のたびに結果が
+    ばらつくことが実際に確認できた(同じプレイリストへの複数回の取得で
+    有効曲数が66件/186件のように変動した)。trackCountの申告値を信用して
+    早期に打ち切るのではなく、常に複数回取得し直した上で、実際に再生に
+    使える(videoId/titleが揃っている)トラック数が最も多かった結果を採用する。"""
     variants = [playlist_id]
     variants.append(playlist_id[2:] if playlist_id.startswith("VL") else "VL" + playlist_id)
     best = None
-    for _attempt in range(3):
+    best_valid_count = -1
+    for _attempt in range(2):
         for pid in variants:
             try:
                 playlist = _yt_ja.get_playlist(pid, limit=limit)
@@ -415,12 +419,10 @@ def _fetch_playlist_by_id(playlist_id, limit=500):
                 continue
             if not playlist or not playlist.get("tracks"):
                 continue
-            declared = playlist.get("trackCount") or 0
-            actual = len(playlist["tracks"])
-            if best is None or actual > len(best.get("tracks") or []):
+            valid_count = sum(1 for t in playlist["tracks"] if t.get("videoId") and t.get("title"))
+            if valid_count > best_valid_count:
                 best = playlist
-            if declared == 0 or actual >= declared:
-                return playlist
+                best_valid_count = valid_count
     return best
 
 
