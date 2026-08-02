@@ -982,149 +982,6 @@ def _resolve_all_tracks_quality(tracks, artist_name):
     return result
 
 
-def _catalog_entry_score(t):
-    """シングル/アルバムの方を動画セクション(MV等)由来より、音源版(ATV)の
-    方をMV(OMV、曲が始まる前に別シーンが入っていることがある)より優先する
-    (_pick_winnerと同じ考え方)。"""
-    return (
-        1 if t.get("type") in ("シングル・EP", "アルバム") else 0,
-        0 if _is_omv(t) else 1,
-    )
-
-
-def _build_catalog_lookup(artist_id):
-    """アーティストの全曲カタログ(fetch_all_tracks)を曲名の正規化キーで
-    引けるようにする。"""
-    lookup = {}
-    for t in fetch_all_tracks(artist_id):
-        if not t.get("videoId") or not t.get("title"):
-            continue
-        key = normalize_title(t["title"])
-        existing = lookup.get(key)
-        if existing is None or _catalog_entry_score(t) > _catalog_entry_score(existing):
-            lookup[key] = t
-    return lookup
-
-
-def _resolve_mix_track(artist_name, mix_track, catalog_match):
-    """公式MIX(シャッフル)が選んだ内容は、原則としてそのまま信頼する
-    (「ライブver.が公式MICKXに入っているなら仕方ないが、そうでないなら勝手に
-    違うものに差し替えないでほしい」という指摘の通り)。シャッフル自身の候補を
-    まず検証し、曲名にlive/ライブ等を含まず、実際の動画の長さが申告時間と
-    一致していれば、それをそのまま採用する(カタログ上に一致するシングル/
-    アルバムがあっても、シャッフル側が既に正常ならそちらへ差し替えない)。
-    シャッフル自身の候補が壊れている場合(例:「きゅきゅきゅキュート」で
-    カタログ側のvideoIdが別の尺の動画に紐付いていたのと同じ壊れ方が
-    シャッフル側で起きているケース)に限り、カタログ上の同名シングル/
-    アルバムを次点の候補として試す(例:「WAO！アオハル！」)。
-    どちらも壊れている/ライブ版だった場合は_find_studio_alternativeで検索し、
-    それでも見つからなければNoneを返す(除外)。
-    MV(OMV、曲が始まる前に別シーンが入っていることがある)より音源版(ATV)を
-    優先したいとの指摘があったため、シャッフル自身の選択を尊重する原則は
-    保ちつつ、非OMVの候補があれば先に試す(同じOMV可否であれば従来通り
-    シャッフル自身の選択を優先する)。"""
-    candidates = [{
-        "videoId": mix_track["videoId"],
-        "title": mix_track["title"],
-        "duration_seconds": mix_track.get("duration_seconds"),
-        "videoType": mix_track.get("videoType"),
-    }]
-    if catalog_match and catalog_match.get("videoId") and catalog_match.get("type") in ("シングル・EP", "アルバム"):
-        candidates.append({
-            "videoId": catalog_match["videoId"],
-            "title": catalog_match.get("title") or mix_track["title"],
-            "duration_seconds": catalog_match.get("duration_seconds"),
-            "videoType": catalog_match.get("videoType"),
-        })
-    seen_vids = set()
-    uniq_candidates = []
-    for c in candidates:
-        if c["videoId"] in seen_vids:
-            continue
-        seen_vids.add(c["videoId"])
-        uniq_candidates.append(c)
-    uniq_candidates.sort(key=lambda c: 0 if _is_omv(c) else 1, reverse=True)
-
-    for c in uniq_candidates:
-        if is_live_recording(c["title"]):
-            continue
-        _, actual_len = _fetch_song_details(c["videoId"])
-        if _is_duration_mismatched(c["duration_seconds"], actual_len):
-            continue
-        new_track = dict(mix_track)
-        new_track["videoId"] = c["videoId"]
-        new_track["title"] = strip_variant_for_display(clean_title(c["title"]))
-        if c["duration_seconds"]:
-            new_track["duration_seconds"] = c["duration_seconds"]
-        return new_track
-
-    alt = _find_studio_alternative(artist_name, mix_track)
-    if not alt:
-        return None
-    new_track, _, _ = alt
-    return new_track
-
-
-def _fetch_official_mix_tracks(artist_id, artist_name):
-    """アーティストページの「シャッフル」ボタンに相当する、YouTube Music公式の
-    おまかせミックス(shuffleId)から曲を取得する。「Presenting <アーティスト>」の
-    ような公式プレイリストは検索で確実に見つける方法が無かったため、代わりに
-    これを使う。get_watch_playlistが返すtrackの形はアルバム/プレイリスト由来の
-    trackと項目名が違う(lengthが"4:28"形式の文字列、thumbnailが単数形)ため、
-    他の関数と同じ形(duration_seconds/thumbnails)に合わせておく。"""
-    shuffle_id = None
-    for client in (_yt_ja, _yt):
-        try:
-            shuffle_id = client.get_artist(artist_id).get("shuffleId")
-            if shuffle_id:
-                break
-        except Exception:
-            continue
-
-    raw_tracks = []
-    if shuffle_id:
-        try:
-            wp = _yt_ja.get_watch_playlist(playlistId=shuffle_id, limit=50)
-            raw_tracks = wp.get("tracks") or []
-        except Exception:
-            raw_tracks = []
-
-    tracks = []
-    for t in raw_tracks:
-        if not t.get("videoId") or not t.get("title"):
-            continue
-        if is_medley_title(t["title"]):
-            continue
-        track = dict(t)
-        track["duration_seconds"] = _duration_str_to_seconds(t.get("length"))
-        track["thumbnails"] = t.get("thumbnail") or []
-        tracks.append(track)
-
-    catalog_lookup = _build_catalog_lookup(artist_id)
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        resolved = list(pool.map(
-            lambda t: _resolve_mix_track(artist_name, t, catalog_lookup.get(normalize_title(t["title"]))),
-            tracks,
-        ))
-    tracks = [t for t in resolved if t is not None]
-
-    tracks = _dedupe_playlist_tracks(tracks)
-
-    # 差し替えで複数のミックス曲が同じ曲に収束することがあるほか、ミックス自体に
-    # 同じ曲がMV版・音源版などで別videoIdとして混ざっていることもあるため、
-    # 曲名ベースで「先に出てきた方を残す」重複除去も行う。
-    seen_titles = set()
-    deduped = []
-    for t in tracks:
-        key = normalize_title(t["title"])
-        if key in seen_titles:
-            continue
-        seen_titles.add(key)
-        deduped.append(t)
-
-    return deduped
-
-
 _VIDEO_TITLE_RE = re.compile(r"[「『]([^」』]+)[」』]")
 _LIVE_VIDEO_RE = re.compile(r"live|tour|ライブ|ツアー", re.IGNORECASE)
 
@@ -1168,8 +1025,7 @@ def fetch_video_tracks(artist_id):
 def get_artist_tracks(artist_name, scope="all"):
     """アーティスト名(表記ゆれ・ローマ字表記でも可)から曲一覧を取得する。見つからない
     場合はNoneを返す。歌詞データが不要なlyrics-quizと異なり、scope="all"で全曲、
-    "top25"/"top50"で再生回数ランキング上位、"mix"でYouTube Music公式のおまかせ
-    ミックス(シャッフル)に絞り込んで取得できる。"""
+    "top25"/"top50"で再生回数ランキング上位に絞り込んで取得できる。"""
     target = find_target_artist(artist_name)
     if not target:
         return None
@@ -1189,8 +1045,6 @@ def get_artist_tracks(artist_name, scope="all"):
                 if t["videoId"] not in have_ids:
                     tracks.append(t)
                     have_ids.add(t["videoId"])
-    elif scope == "mix":
-        tracks = _filter_embeddable(_fetch_official_mix_tracks(artist_id, canonical_name))
     else:
         # fetch_all_tracks自体がアルバム/シングル未登録の動画限定曲も含めて
         # 返すため、ここで別途動画セクションへフォールバックする必要はない。

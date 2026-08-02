@@ -17,8 +17,22 @@
     seconds: 2,
     session: null,
     countdownTimer: null,
-    brokenVideoIds: new Set(), // 再生できないと判明した曲(このセッション中は避ける)
+    brokenVideoIds: new Set(), // 再生できないと判明した曲(前回までの分も含めて避ける)
   };
+
+  // 前回までのセッションで再生できないと判明した曲のvideoIdを読み込んでおく
+  // (loadBrokenVideoIdsFromStorageはfunction宣言なので、ファイル内での定義位置に
+  // 関わらずこの時点で呼び出せる)。
+  loadBrokenVideoIdsFromStorage().forEach((id) => State.brokenVideoIds.add(id));
+
+  // 既知の再生不可曲(埋め込み制限などで毎回失敗することが分かっている曲)を
+  // 出題プールから除外する。除外し過ぎてプールが空になってしまう場合(一時的な
+  // 失敗を過剰に記録してしまった場合の保険)は、絞り込み自体をやめて元のまま返す。
+  function excludeKnownBrokenTracks(tracks) {
+    if (!tracks || tracks.length === 0) return tracks;
+    const filtered = tracks.filter((t) => !State.brokenVideoIds.has(t.videoId));
+    return filtered.length > 0 ? filtered : tracks;
+  }
 
   function $(id) { return document.getElementById(id); }
 
@@ -63,6 +77,32 @@
   // localStorageに保存する。毎回URLを貼り直して読み込み直す手間を省く。
   const PLAYLIST_STORAGE_KEY = "introdon.lastPlaylist.v1";
 
+  // 実際に再生を試みてエラーになった曲(埋め込み制限など、oEmbedの事前チェックでは
+  // 検知できないもの)は、このセッション中だけでなく次回以降も避けたいので
+  // videoIdをlocalStorageに永続化する。私立恵比寿中学のような、事務所の方針で
+  // 一部動画が埋め込み再生を制限しているケースでは毎回同じ曲で失敗を繰り返す
+  // ため、一度判明した分は次回の出題プールから最初から除外する。無制限に
+  // 増え続けないよう、直近の一定件数だけ保持する。
+  const BROKEN_VIDEO_STORAGE_KEY = "introdon.brokenVideoIds.v1";
+  const BROKEN_VIDEO_STORAGE_LIMIT = 1000;
+
+  function loadBrokenVideoIdsFromStorage() {
+    try {
+      const raw = localStorage.getItem(BROKEN_VIDEO_STORAGE_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveBrokenVideoIdsToStorage(idsSet) {
+    try {
+      const arr = [...idsSet].slice(-BROKEN_VIDEO_STORAGE_LIMIT);
+      localStorage.setItem(BROKEN_VIDEO_STORAGE_KEY, JSON.stringify(arr));
+    } catch (e) { /* noop: 保存容量オーバー等は無視してよい */ }
+  }
+
   function savePlaylistToStorage(url, playlistTitle, tracks) {
     try {
       localStorage.setItem(PLAYLIST_STORAGE_KEY, JSON.stringify({ url, playlistTitle, tracks }));
@@ -104,7 +144,7 @@
         statusEl.classList.add("is-error");
         return;
       }
-      State.playlistPool = result.tracks;
+      State.playlistPool = excludeKnownBrokenTracks(result.tracks);
       State.lastPlaylistTitle = result.playlistTitle;
       if (State.source === "playlist") State.pool = State.playlistPool;
       statusEl.textContent = `${result.playlistTitle}: ${result.tracks.length}曲 取得しました`;
@@ -151,7 +191,7 @@
     if (!saved || !saved.tracks || saved.tracks.length === 0) return;
     playlistInput.value = saved.url || "";
     playlistClearBtn.classList.toggle("hidden", !saved.url);
-    State.playlistPool = saved.tracks;
+    State.playlistPool = excludeKnownBrokenTracks(saved.tracks);
     State.lastPlaylistTitle = saved.playlistTitle || "";
     if (State.source === "playlist") State.pool = State.playlistPool;
     $("playlist-status").textContent = `${saved.playlistTitle}: ${saved.tracks.length}曲(前回読み込み分)`;
@@ -166,9 +206,8 @@
     { value: "top25", label: "Top25" },
     { value: "top50", label: "Top50" },
     { value: "all", label: "全曲" },
-    { value: "mix", label: "ミックス" },
   ];
-  const SCOPE_LABEL = { top25: "Top25", top50: "Top50", all: "全曲", mix: "公式ミックス" };
+  const SCOPE_LABEL = { top25: "Top25", top50: "Top50", all: "全曲" };
 
   let suggestAbortController = null;
   let suggestRequestId = 0;
@@ -318,7 +357,7 @@
     hideSuggestions();
     artistInput.focus();
     if (State.selectedArtists.some((a) => a.name === name)) return;
-    State.selectedArtists.push({ name, scope: "mix" });
+    State.selectedArtists.push({ name, scope: "top25" });
     renderArtistEntries();
     refreshArtistPool();
   }
@@ -534,7 +573,7 @@
       }
     });
 
-    State.artistPool = merged.length > 0 ? merged : null;
+    State.artistPool = merged.length > 0 ? excludeKnownBrokenTracks(merged) : null;
     if (State.source === "artist") State.pool = State.artistPool;
 
     if (merged.length === 0) {
@@ -713,8 +752,8 @@
 
   function selectSavedDataset(ds) {
     State.savedActiveId = ds.id;
-    State.savedPool = ds.tracks;
-    State.pool = ds.tracks;
+    State.savedPool = excludeKnownBrokenTracks(ds.tracks);
+    State.pool = State.savedPool;
     renderSavedDatasetsList();
     $("saved-status").textContent = `${ds.label}: ${ds.tracks.length}曲を読み込みました`;
     updateStartButtonState();
@@ -738,10 +777,6 @@
   // 済ませておく。1問目→2問目の切り替えでもラグが出ないよう、2問目分もここで
   // 先読みしておく(3問目以降は毎問、答え合わせ中に次を先読みする)。
   async function startGame(triggerBtn) {
-    // クリックイベントハンドラの中で(awaitを挟む前に)呼ぶことで、ブラウザに
-    // 「ユーザー操作に基づくミュート解除」だと認識させる(下記prepareの
-    // 事前呼び出しにより、この時点で既にプレーヤーが存在しているはず)。
-    YTPlayers.unmuteAll();
     const originalLabel = triggerBtn.textContent;
     triggerBtn.disabled = true;
     triggerBtn.textContent = "準備中...";
@@ -754,13 +789,24 @@
     });
     loadCurrentQuestionPlan();
     try {
+      // ページ読み込み時の先読み(下部のprepare(2)呼び出し)がまだ完了して
+      // いない場合、ここで待たずにunmuteAll()を呼ぶとpoolが空/不完全なままで
+      // 何もミュート解除されず、1問目だけ無音になる不具合があった。プレーヤーが
+      // 確実に存在する状態にしてからミュート解除する(クリックイベントの
+      // ハンドラチェーン内での呼び出しなので、間にawaitを挟んでも「ユーザー
+      // 操作に基づく」ものとしてブラウザには扱われる)。
       await YTPlayers.prepare(2);
+      YTPlayers.unmuteAll();
       await YTPlayers.precue(0, currentPlaybackPlan.videoIds[0], currentPlaybackPlan.startSecondsList[0]);
       if (State.session.questions.length > 1) {
         const secondTrack = State.session.questions[1].tracks[0];
         await YTPlayers.precue(1, secondTrack.videoId, 0);
       }
-    } catch (e) { /* noop: 失敗しても通常のplayCurrentClip側の読み込みに任せる */ }
+    } catch (e) {
+      // prepareが失敗した場合でもミュート解除だけは試みておく(既存プレーヤーが
+      // あれば効く)。
+      YTPlayers.unmuteAll();
+    }
     triggerBtn.disabled = false;
     triggerBtn.textContent = originalLabel;
     showScreen("screen-game");
@@ -869,7 +915,10 @@
       countdownEl.classList.remove("is-waiting");
       visual.classList.add("is-idle");
       const anyError = results.some((r) => r.error);
-      if (anyError) videoIds.forEach((id) => State.brokenVideoIds.add(id));
+      if (anyError) {
+        videoIds.forEach((id) => State.brokenVideoIds.add(id));
+        saveBrokenVideoIdsToStorage(State.brokenVideoIds);
+      }
 
       // 最初の再生に失敗した曲は、エラー表示はせず別の曲へ静かに差し替えて
       // 出題し直す(ユーザーには再生できない曲があったことを見せない)。
