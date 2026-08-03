@@ -87,23 +87,6 @@ def api_playlist_tracks():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/_debug_playability")
-def api_debug_playability():
-    # 一時的な調査用エンドポイント(用が済み次第削除する)。Render環境で
-    # get_song()の生の応答が実際にどう返っているかを直接確認する。
-    ids = request.args.get("ids", "").split(",")
-    ids = [i.strip() for i in ids if i.strip()]
-    out = {}
-    for vid in ids:
-        try:
-            song = ytmusic_service._yt.get_song(vid)
-            status = (song.get("playabilityStatus") or {}).get("status")
-            out[vid] = {"status": status, "keys": list(song.keys())}
-        except Exception as e:
-            out[vid] = {"error": str(e)[:200]}
-    return jsonify(out)
-
-
 def _ensure_port_free(host, port):
     """
     Windowsはデフォルトのソケット挙動が緩く、既に別プロセスがlistenして

@@ -364,52 +364,23 @@ def _is_embeddable(video_id):
     return ok
 
 
-def _is_playability_ok(video_id):
-    """get_song()のplayabilityStatus.statusで、動画が実際に再生可能かを確認する。
-    oEmbedは「埋め込みが許可されているか」しか見ておらず、削除/非公開に
-    なった動画でもメタデータ自体は引けてしまい200を返すことがある――
-    私立恵比寿中学のプレイリストで実際に確認した例では、Less Vocal版や
-    リミックスなどのボーナストラックが後から非公開化されていて、oEmbedは
-    「再生可能」と誤判定する一方、get_song()のplayabilityStatusは正しく
-    "UNPLAYABLE"(Video unavailable)を返していた。これが「サーバー側の
-    チェックは通っているのに実際には再生できませんでした、が出続ける」の
-    直接の原因だった。
-    戻り値はTrue(再生可能)/False(再生不可)/None(判定不能、ネットワーク
-    エラー等)。Noneの場合は呼び出し側でfail-open(除外しない)扱いにする。"""
-    try:
-        status = (_yt.get_song(video_id).get("playabilityStatus") or {}).get("status")
-    except Exception:
-        return None
-    return status == "OK"
-
-
 def _filter_embeddable(tracks):
     if not tracks:
         return tracks
+    # get_song()のplayabilityStatusによる二次チェックを試したことがあるが、
+    # Render環境からはYouTube側のbot対策(playabilityStatus="LOGIN_REQUIRED")に
+    # ほぼ即座に引っかかり、ローカルからは正しく判定できる動画も含めて全件が
+    # 判定不能になることを実機で確認した(データセンターIPに対する認証要求で、
+    # 待つ・並列数を減らす等では回避できない)。そのため個別の動画の実再生可否は
+    # サーバー側では確実に検証できないと判断し、oEmbed(埋め込み許可の有無のみ)
+    # による軽量な事前チェックに留める。oEmbedをすり抜ける「メタデータは残って
+    # いるが実際には削除/非公開になった動画」は、実際の再生時にクライアント側の
+    # 自動リトライ・再生不可リストの永続化(static/app.js)で追って除外する。
     # 並列数を減らし、大量アクセスによる一時的なレート制限(→誤った再生可能判定)を
     # 起きにくくする。取得は遅くなるが、正確さを優先する。
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda t: _is_embeddable(t["videoId"]), tracks))
-    survivors = [t for t, ok in zip(tracks, results) if ok]
-    if not survivors:
-        return survivors
-
-    # oEmbed通過後、get_song()のplayabilityStatusでさらに正確な二次チェックを
-    # 行う(上記_is_playability_ok参照)。ただし、以前get_song()ベースの
-    # 判定に全面的に切り替えた際、曲数の多いアーティストで大量並列実行すると
-    # YouTube側のソフトなレート制限に引っかかり、全曲が誤って「再生不可」
-    # 扱いになった実例がある。この二次チェックの結果、明らかに異常な割合
-    # (半数以上)が「再生不可」になった場合は、レート制限等でこのチェック
-    # 自体が信用できないと判断し、oEmbedの結果だけを採用する(安全側に倒す)。
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        playability = list(pool.map(lambda t: _is_playability_ok(t["videoId"]), survivors))
-
-    judged = [ok for ok in playability if ok is not None]
-    unplayable_ratio = (sum(1 for ok in judged if not ok) / len(judged)) if judged else 0
-    if unplayable_ratio > 0.5:
-        return survivors
-
-    return [t for t, ok in zip(survivors, playability) if ok is not False]
+    return [t for t, ok in zip(tracks, results) if ok]
 
 
 _PLAYLIST_ID_RE = re.compile(r"[?&]list=([\w-]+)")
