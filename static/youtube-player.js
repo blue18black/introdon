@@ -81,6 +81,17 @@ const YTPlayers = (() => {
         activeCancel[playerIndex]();
       }
 
+      // 「無音のまま終わり、もう一度再生すると鳴る」という報告が繰り返しあり、
+      // 絶対に起きてはならないとの明確な指摘があった。startGame()側での
+      // 一括ミュート解除(下記unmuteAll)だけでは、その後に同じプレーヤーで
+      // loadVideoById()/cueVideoById()するたびにミュート状態が再び効いて
+      // しまうケースを防ぎきれなかった可能性があるため、念のため過剰なくらい
+      // 冗長に、この再生の対象プレーヤーを毎回ここでも明示的にミュート解除する。
+      try {
+        player.unMute();
+        player.setVolume(100);
+      } catch (e) { /* noop */ }
+
       let settled = false;
       let started = false;
       let retried = false;
@@ -170,6 +181,13 @@ const YTPlayers = (() => {
           const advancing = preRoll === 0 && t != null && confirmLastTime != null && t > confirmLastTime + 0.05;
           if (reachedTarget || advancing) {
             clearConfirm();
+            // getCurrentTime()の進行はミュート状態でも起こりうる(=無音のまま
+            // 「再生成功」判定されてしまう)ため、成功と扱う直前に最後の保険として
+            // 必ずミュート解除しておく。
+            try {
+              player.unMute();
+              player.setVolume(100);
+            } catch (e) { /* noop */ }
             settleTimer = setTimeout(() => {
               settleTimer = null;
               begin();
@@ -248,6 +266,10 @@ const YTPlayers = (() => {
 
       const load = () => {
         try {
+          player.unMute();
+          player.setVolume(100);
+        } catch (e) { /* noop */ }
+        try {
           player.loadVideoById({ videoId, startSeconds: loadStartSeconds });
         } catch (e) {
           settled = true;
@@ -305,6 +327,10 @@ const YTPlayers = (() => {
           startPlayback();
           return;
         }
+        try {
+          player.unMute();
+          player.setVolume(100);
+        } catch (e) { /* noop */ }
         try {
           player.cueVideoById({ videoId, startSeconds: loadStartSeconds });
         } catch (e) { /* noop */ }
