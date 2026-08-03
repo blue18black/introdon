@@ -717,10 +717,15 @@ def _candidate_matches_artist(target_name, candidate_artists):
 
 
 def _find_studio_alternative(artist_name, track):
-    """ライブ音源判定/カタログの申告時間との不整合で除外対象になった曲について、
-    除外する前に同じ曲の別バージョン(スタジオ版など)が無いか直接検索して探す。
+    """ライブ音源判定/カタログの申告時間との不整合/MV(OMV)しかカタログに
+    無い曲について、除外・妥協する前に同じ曲の別バージョン(スタジオ版/
+    音源版など)が無いか直接検索して探す。アーティストページのアルバム/
+    シングル一覧を辿るだけでは見つからない再発盤・別リリースの音源版が、
+    検索(YouTube Music全体の索引)では見つかることがある。
     見つかればそちらの情報(videoId/タイトル/再生時間/再生回数)を積んで返し、
-    見つからなければNoneを返す(呼び出し側で除外する)。"""
+    見つからなければNoneを返す(呼び出し側で除外/元のまま採用する)。
+    候補が複数見つかった場合は、MV(OMV、曲が始まる前に別シーンが入って
+    いることがある)より音源版(ATV)を優先する。"""
     raw_title = track.get("title", "")
     title_key = normalize_title(raw_title)
     if not title_key:
@@ -731,6 +736,8 @@ def _find_studio_alternative(artist_name, track):
         results = _yt_ja.search(query, filter="songs", limit=10)
     except Exception:
         results = []
+
+    candidates = []
     for r in results:
         vid = r.get("videoId")
         if not vid or vid == track.get("videoId"):
@@ -744,31 +751,51 @@ def _find_studio_alternative(artist_name, track):
         declared = _duration_str_to_seconds(r.get("duration")) or actual_len
         if _is_duration_mismatched(declared, actual_len):
             continue
-        new_track = dict(track)
-        new_track["videoId"] = vid
-        new_track["title"] = cand_title
-        if declared:
-            new_track["duration_seconds"] = declared
-        return new_track, view_count, actual_len
-    return None
+        candidates.append((r, vid, cand_title, view_count, actual_len, declared))
+
+    if not candidates:
+        return None
+
+    # 音源版(ATV)の候補があればそちらを優先し、無ければMV(OMV)のままでも採用する。
+    candidates.sort(key=lambda c: 0 if _is_omv(c[0]) else 1, reverse=True)
+    r, vid, cand_title, view_count, actual_len, declared = candidates[0]
+    new_track = dict(track)
+    new_track["videoId"] = vid
+    new_track["title"] = cand_title
+    new_track["videoType"] = r.get("videoType")
+    if declared:
+        new_track["duration_seconds"] = declared
+    return new_track, view_count, actual_len
 
 
 def _resolve_track_quality(artist_name, track):
     """ライブ音源(曲名にlive/ライブ等を含む)や、カタログの申告時間と実際の動画の
     長さが大きくズレている(データ不整合で別テイクに紐付いている)曲を検出し、
-    除外する前にスタジオ版などの代わりを検索して差し替えを試みる。
+    除外する前にスタジオ版などの代わりを検索して差し替えを試みる(見つからなければ
+    除外)。また、アーティストのディスコグラフィ走査ではMV(OMV)しか見つからな
+    かった曲についても、検索(YouTube Music全体の索引)でMVより音源版(ATV)の
+    アーティスト自身のシングル/アルバム版が見つからないか試す(見つからなくても
+    除外はせず、元のMVのまま採用する――MVしか存在しない曲を無理に弾く必要は
+    無いため)。
     戻り値は (曲, 再生回数) のタプルで、除外する場合は (None, 0)。"""
     view_count, actual_len = _fetch_song_details(track.get("videoId"))
-    flagged = is_live_recording(track.get("title", "")) or _is_duration_mismatched(
+    must_replace = is_live_recording(track.get("title", "")) or _is_duration_mismatched(
         track.get("duration_seconds"), actual_len
     )
-    if not flagged:
-        return track, view_count
-    alt = _find_studio_alternative(artist_name, track)
-    if not alt:
-        return None, 0
-    new_track, alt_view_count, _ = alt
-    return new_track, alt_view_count
+    if must_replace:
+        alt = _find_studio_alternative(artist_name, track)
+        if not alt:
+            return None, 0
+        new_track, alt_view_count, _ = alt
+        return new_track, alt_view_count
+
+    if _is_omv(track):
+        alt = _find_studio_alternative(artist_name, track)
+        if alt:
+            new_track, alt_view_count, _ = alt
+            return new_track, alt_view_count
+
+    return track, view_count
 
 
 _VIEWS_STR_RE = re.compile(r"([\d.,]+)\s*([KM]?)", re.IGNORECASE)
@@ -891,19 +918,28 @@ def fetch_ranked_tracks(artist_id, artist_name):
 def _resolve_all_tracks_quality(tracks, artist_name):
     """全曲モード用。ライブ音源(曲名にlive/ライブ等を含む)や、カタログの申告時間と
     実際の動画の長さが大きくズレている曲を検出し、除外する前にスタジオ版などの
-    代わりを検索して差し替えを試みる(fetch_ranked_tracks内のロジックと同様)。"""
+    代わりを検索して差し替えを試みる(fetch_ranked_tracks内のロジックと同様)。
+    MV(OMV)しか見つからなかった曲についても、検索で音源版(ATV)が見つからないか
+    試す(見つからなくても除外はしない)。"""
     def resolve_one(t):
         _, actual_len = _fetch_song_details(t.get("videoId"))
-        flagged = is_live_recording(t.get("title", "")) or _is_duration_mismatched(
+        must_replace = is_live_recording(t.get("title", "")) or _is_duration_mismatched(
             t.get("duration_seconds"), actual_len
         )
-        if not flagged:
-            return t
-        alt = _find_studio_alternative(artist_name, t)
-        if not alt:
-            return None
-        new_track, _, _ = alt
-        return new_track
+        if must_replace:
+            alt = _find_studio_alternative(artist_name, t)
+            if not alt:
+                return None
+            new_track, _, _ = alt
+            return new_track
+
+        if _is_omv(t):
+            alt = _find_studio_alternative(artist_name, t)
+            if alt:
+                new_track, _, _ = alt
+                return new_track
+
+        return t
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         resolved = list(pool.map(resolve_one, tracks))
