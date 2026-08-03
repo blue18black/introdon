@@ -919,27 +919,23 @@ def _resolve_all_tracks_quality(tracks, artist_name):
     """全曲モード用。ライブ音源(曲名にlive/ライブ等を含む)や、カタログの申告時間と
     実際の動画の長さが大きくズレている曲を検出し、除外する前にスタジオ版などの
     代わりを検索して差し替えを試みる(fetch_ranked_tracks内のロジックと同様)。
-    MV(OMV)しか見つからなかった曲についても、検索で音源版(ATV)が見つからないか
-    試す(見つからなくても除外はしない)。"""
+    MV(OMV)しか見つからなかった曲を検索で音源版に差し替える処理(下記
+    _resolve_track_quality参照)は、Top25/Top50(候補は最大120件に絞り込み
+    済み)とは違い全曲モードは曲数が数百件規模になることもあり、曲ごとに
+    追加の検索を行うと合計の所要時間がRenderのゲートウェイタイムアウト
+    (約30秒)に迫ってしまうことを実機で確認したため、全曲モードでは行わない。"""
     def resolve_one(t):
         _, actual_len = _fetch_song_details(t.get("videoId"))
         must_replace = is_live_recording(t.get("title", "")) or _is_duration_mismatched(
             t.get("duration_seconds"), actual_len
         )
-        if must_replace:
-            alt = _find_studio_alternative(artist_name, t)
-            if not alt:
-                return None
-            new_track, _, _ = alt
-            return new_track
-
-        if _is_omv(t):
-            alt = _find_studio_alternative(artist_name, t)
-            if alt:
-                new_track, _, _ = alt
-                return new_track
-
-        return t
+        if not must_replace:
+            return t
+        alt = _find_studio_alternative(artist_name, t)
+        if not alt:
+            return None
+        new_track, _, _ = alt
+        return new_track
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         resolved = list(pool.map(resolve_one, tracks))
