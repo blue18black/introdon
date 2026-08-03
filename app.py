@@ -73,20 +73,6 @@ def api_artist_tracks():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/playlist_tracks")
-def api_playlist_tracks():
-    url = request.args.get("url", "").strip()
-    if not url:
-        return jsonify({"error": "プレイリストのURLを指定してください。"}), 400
-    try:
-        result = ytmusic_service.get_playlist_tracks(url)
-        if result is None:
-            return jsonify({"error": "プレイリストが見つかりませんでした。URLをご確認ください。"}), 404
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
 def _ensure_port_free(host, port):
     """
     Windowsはデフォルトのソケット挙動が緩く、既に別プロセスがlistenして

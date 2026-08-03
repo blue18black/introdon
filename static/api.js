@@ -43,9 +43,4 @@ const Api = {
     const data = await this._get(`/api/artist_tracks?${params.toString()}`, signal);
     return data;
   },
-
-  async getPlaylistTracks(url) {
-    const data = await this._get(`/api/playlist_tracks?url=${encodeURIComponent(url)}`);
-    return data;
-  },
 };

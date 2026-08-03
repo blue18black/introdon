@@ -9,8 +9,6 @@
     selectedArtists: [], // 常に0件か1件(単一アーティストのみ選択可能)
     artistPool: null, // 選択中の全アーティストをマージした曲プール
     artistTrackCache: {}, // `${name}::${scope}` -> {artistName, tracks}
-    playlistPool: null, // 読み込んだプレイリストの曲プール
-    lastPlaylistTitle: "",
     savedPool: null, // 保存済みデータセットから読み込んだ曲プール
     savedActiveId: null,
     numQuestions: 10,
@@ -59,18 +57,12 @@
     if (State.source === "artist") {
       State.pool = State.artistPool;
       updateStartButtonState();
-    } else if (State.source === "playlist") {
-      State.pool = State.playlistPool;
-      updateStartButtonState();
     } else if (State.source === "saved") {
       renderSavedDatasetsList();
       State.pool = State.savedPool;
       updateStartButtonState();
     }
   });
-
-  // ---- プレイリストのURL指定 ----
-  const playlistInput = $("playlist-input");
 
   // 実際に再生を試みてエラーになった曲(埋め込み制限など、oEmbedの事前チェックでは
   // 検知できないもの)は、このセッション中だけでなく次回以降も避けたいので
@@ -97,64 +89,6 @@
       localStorage.setItem(BROKEN_VIDEO_STORAGE_KEY, JSON.stringify(arr));
     } catch (e) { /* noop: 保存容量オーバー等は無視してよい */ }
   }
-
-  async function loadPlaylistPool() {
-    const url = playlistInput.value.trim();
-    const statusEl = $("playlist-status");
-    if (!url) {
-      statusEl.textContent = "プレイリストのURLを入力してください";
-      statusEl.classList.add("is-error");
-      return;
-    }
-    statusEl.textContent = "読み込み中...";
-    statusEl.classList.remove("is-error");
-    State.playlistPool = null;
-    if (State.source === "playlist") State.pool = null;
-    updateStartButtonState();
-    try {
-      const result = await Api.getPlaylistTracks(url);
-      if (!result.tracks || result.tracks.length === 0) {
-        statusEl.textContent = "曲が見つかりませんでした";
-        statusEl.classList.add("is-error");
-        return;
-      }
-      State.playlistPool = excludeKnownBrokenTracks(result.tracks);
-      State.lastPlaylistTitle = result.playlistTitle;
-      if (State.source === "playlist") State.pool = State.playlistPool;
-      statusEl.textContent = `${result.playlistTitle}: ${result.tracks.length}曲 取得しました`;
-    } catch (err) {
-      statusEl.textContent = `取得に失敗しました: ${err.message}`;
-      statusEl.classList.add("is-error");
-    }
-    updateStartButtonState();
-  }
-
-  $("playlist-load-btn").addEventListener("click", loadPlaylistPool);
-  playlistInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      loadPlaylistPool();
-    }
-  });
-
-  // 間違ったURLを入力してしまった時に、入力欄と読み込み済みの内容をクリアできるようにする。
-  const playlistClearBtn = $("playlist-clear-btn");
-  playlistInput.addEventListener("input", () => {
-    playlistClearBtn.classList.toggle("hidden", playlistInput.value.trim().length === 0);
-  });
-  playlistClearBtn.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    playlistInput.value = "";
-    playlistClearBtn.classList.add("hidden");
-    playlistInput.focus();
-    State.playlistPool = null;
-    State.lastPlaylistTitle = "";
-    if (State.source === "playlist") State.pool = null;
-    const statusEl = $("playlist-status");
-    statusEl.textContent = "";
-    statusEl.classList.remove("is-error");
-    updateStartButtonState();
-  });
 
   // ---- アーティスト検索(サジェスト付きライブ検索) ----
   const artistInput = $("artist-input");
@@ -611,9 +545,6 @@
   function suggestDatasetLabel() {
     if (State.source === "artist") {
       return State.selectedArtists.map((a) => `${a.name}(${SCOPE_LABEL[a.scope]})`).join("+");
-    }
-    if (State.source === "playlist" && State.lastPlaylistTitle) {
-      return `${State.lastPlaylistTitle}(${State.pool.length}曲)`;
     }
     return `曲リスト(${State.pool.length}曲)`;
   }

@@ -32,7 +32,6 @@
         <div class="setup-label">曲のソース</div>
         <div class="tabs" id="source-tabs">
           <button class="tab is-active" data-source="artist">アーティスト</button>
-          <button class="tab" data-source="playlist">プレイリスト</button>
           <button class="tab" data-source="saved">保存済み</button>
         </div>
 
@@ -44,16 +43,6 @@
           <ul id="artist-suggestions" class="artist-suggestions hidden"></ul>
           <ul class="artist-entries" id="artist-chips"></ul>
           <div class="pool-status" id="artist-status"></div>
-        </div>
-
-        <div id="source-playlist" class="source-pane">
-          <p class="hint">YouTube Musicのプレイリストのリンクを貼ると、そのまま曲リストとして使えます。</p>
-          <div class="artist-input-wrap">
-            <input id="playlist-input" type="text" placeholder="プレイリストのURLを貼り付け" autocomplete="off">
-            <button id="playlist-clear-btn" class="artist-clear-btn hidden" type="button">×</button>
-          </div>
-          <button id="playlist-load-btn" class="btn-save" type="button">このプレイリストを読み込む</button>
-          <div class="pool-status" id="playlist-status"></div>
         </div>
 
         <div id="source-saved" class="source-pane">
