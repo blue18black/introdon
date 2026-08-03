@@ -90,12 +90,17 @@ def api_playlist_tracks():
 @app.route("/api/_debug_playability")
 def api_debug_playability():
     # 一時的な調査用エンドポイント(用が済み次第削除する)。Render環境で
-    # get_song()のplayabilityStatusが実際にどう返っているかを直接確認する。
+    # get_song()の生の応答が実際にどう返っているかを直接確認する。
     ids = request.args.get("ids", "").split(",")
     ids = [i.strip() for i in ids if i.strip()]
     out = {}
     for vid in ids:
-        out[vid] = ytmusic_service._is_playability_ok(vid)
+        try:
+            song = ytmusic_service._yt.get_song(vid)
+            status = (song.get("playabilityStatus") or {}).get("status")
+            out[vid] = {"status": status, "keys": list(song.keys())}
+        except Exception as e:
+            out[vid] = {"error": str(e)[:200]}
     return jsonify(out)
 
 
