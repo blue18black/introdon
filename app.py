@@ -33,6 +33,17 @@ def index():
     return _INDEX_HTML
 
 
+@app.after_request
+def _no_store_api_responses(response):
+    # /api/配下はブラウザ・中間プロキシのHTTPキャッシュに一切乗せない。
+    # 「修正したはずなのに古い結果のまま」という混乱が繰り返し起きていたため、
+    # 静的ファイルのキャッシュバスティングとは別に、動的なAPI応答側にも
+    # 明示的にno-storeを付けて疑いの余地を無くす。
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.route("/api/artist_suggest")
 def api_artist_suggest():
     query = request.args.get("q", "").strip()
