@@ -11,6 +11,7 @@
 分離されているため、ライブ/インスト等の版違いも文字列パースに頼らず確実に検出できる。
 """
 import re
+import sys
 import threading
 import time
 import unicodedata
@@ -1239,6 +1240,18 @@ def _find_ytmusic_audio_for_track(
         matched = _search_ytmusic_audio_by_album_browse(title, candidate_album, track_artist_name)
         if matched:
             return matched, "album"
+    # ここまでの全手段(曲名+アルバム名/演奏者名、英題フォールバック、
+    # アルバムブラウズ)を試しても見つからなかった場合。検索リクエスト
+    # 自体は失敗していない(失敗していればytmusic_service._retry側で
+    # 別途ログが出る)ため、これは「純粋に一致する候補が無かった」ケース。
+    # ローカルでは再現しない失敗がRender上でだけ起きる場合、この行が
+    # 出るかどうかで「検索は試みたが見つからなかった」のか「そもそも
+    # ここまで処理が到達していない」のかを切り分けられる。
+    print(
+        f"[deezer_service] no ytmusic match for title={title!r} album={album_title!r} "
+        f"artist={track_artist_name!r} plain_album={plain_album_title!r} english={english_title!r}",
+        file=sys.stderr,
+    )
     return None, None
 
 
