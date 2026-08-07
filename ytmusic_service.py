@@ -78,13 +78,17 @@ def _throttle():
 
 
 def _retry(fn, retries=4, delay=1.0, default=None):
+    """delayは初回リトライ時の待ち時間。レート制限の解除にかかる時間は
+    環境(サーバーの回線・IP)によって差があり、固定の短い待ち時間だけでは
+    足りずに結局諦めてしまうことがあったため、iTunes側(itunes_service._get)
+    と同様にリトライのたびに待ち時間を伸ばす(指数バックオフ)。"""
     for attempt in range(retries + 1):
         _throttle()
         try:
             return fn()
         except Exception:
             if attempt < retries:
-                time.sleep(delay)
+                time.sleep(delay * (2 ** attempt))
     return default
 
 
