@@ -27,7 +27,15 @@ _API_BASE = "https://api.deezer.com"
 
 def _make_session():
     session = requests.Session()
-    session.headers.update({"User-Agent": "introdon2/1.0"})
+    # Accept-Languageを指定しないと、リクエスト元IPのジオロケーションから
+    # 言語/カタログ版を推測するため、海外データセンター(Render等)からだと
+    # 日本語表記があるはずの曲がローマ字表記(国際流通版)で返ってくることが
+    # ある(例:超ときめき♡宣伝部「青春アンセム」がSeishun Anthem表記になる)。
+    # サーバーの場所に関係なく日本語表記を優先させる。
+    session.headers.update({
+        "User-Agent": "introdon2/1.0",
+        "Accept-Language": "ja-JP,ja;q=0.9",
+    })
     return session
 
 
