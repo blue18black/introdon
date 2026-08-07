@@ -1,5 +1,3 @@
 flask
-requests
-gunicorn
 ytmusicapi
-yt-dlp
+gunicorn

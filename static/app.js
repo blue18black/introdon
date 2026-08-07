@@ -14,20 +14,21 @@
     numQuestions: 10,
     seconds: 2,
     session: null,
-    brokenTrackIds: new Set(), // 再生できないと判明した曲(前回までの分も含めて避ける)
+    countdownTimer: null,
+    brokenVideoIds: new Set(), // 再生できないと判明した曲(前回までの分も含めて避ける)
   };
 
-  // 前回までのセッションで再生できないと判明した曲のtrackIdを読み込んでおく
-  // (loadBrokenTrackIdsFromStorageはfunction宣言なので、ファイル内での定義位置に
+  // 前回までのセッションで再生できないと判明した曲のvideoIdを読み込んでおく
+  // (loadBrokenVideoIdsFromStorageはfunction宣言なので、ファイル内での定義位置に
   // 関わらずこの時点で呼び出せる)。
-  loadBrokenTrackIdsFromStorage().forEach((id) => State.brokenTrackIds.add(id));
+  loadBrokenVideoIdsFromStorage().forEach((id) => State.brokenVideoIds.add(id));
 
   // 既知の再生不可曲(埋め込み制限などで毎回失敗することが分かっている曲)を
   // 出題プールから除外する。除外し過ぎてプールが空になってしまう場合(一時的な
   // 失敗を過剰に記録してしまった場合の保険)は、絞り込み自体をやめて元のまま返す。
   function excludeKnownBrokenTracks(tracks) {
     if (!tracks || tracks.length === 0) return tracks;
-    const filtered = tracks.filter((t) => !State.brokenTrackIds.has(t.trackId));
+    const filtered = tracks.filter((t) => !State.brokenVideoIds.has(t.videoId));
     return filtered.length > 0 ? filtered : tracks;
   }
 
@@ -65,16 +66,16 @@
 
   // 実際に再生を試みてエラーになった曲(埋め込み制限など、oEmbedの事前チェックでは
   // 検知できないもの)は、このセッション中だけでなく次回以降も避けたいので
-  // trackIdをlocalStorageに永続化する。私立恵比寿中学のような、事務所の方針で
+  // videoIdをlocalStorageに永続化する。私立恵比寿中学のような、事務所の方針で
   // 一部動画が埋め込み再生を制限しているケースでは毎回同じ曲で失敗を繰り返す
   // ため、一度判明した分は次回の出題プールから最初から除外する。無制限に
   // 増え続けないよう、直近の一定件数だけ保持する。
-  const BROKEN_TRACK_STORAGE_KEY = "introdon.brokenTrackIds.v1";
+  const BROKEN_VIDEO_STORAGE_KEY = "introdon.brokenVideoIds.v1";
   const BROKEN_VIDEO_STORAGE_LIMIT = 1000;
 
-  function loadBrokenTrackIdsFromStorage() {
+  function loadBrokenVideoIdsFromStorage() {
     try {
-      const raw = localStorage.getItem(BROKEN_TRACK_STORAGE_KEY);
+      const raw = localStorage.getItem(BROKEN_VIDEO_STORAGE_KEY);
       const arr = raw ? JSON.parse(raw) : [];
       return Array.isArray(arr) ? arr : [];
     } catch (e) {
@@ -82,10 +83,10 @@
     }
   }
 
-  function saveBrokenTrackIdsToStorage(idsSet) {
+  function saveBrokenVideoIdsToStorage(idsSet) {
     try {
       const arr = [...idsSet].slice(-BROKEN_VIDEO_STORAGE_LIMIT);
-      localStorage.setItem(BROKEN_TRACK_STORAGE_KEY, JSON.stringify(arr));
+      localStorage.setItem(BROKEN_VIDEO_STORAGE_KEY, JSON.stringify(arr));
     } catch (e) { /* noop: 保存容量オーバー等は無視してよい */ }
   }
 
@@ -241,9 +242,8 @@
     }
   });
 
-  // アーティストを1件、取得範囲(既定全曲)付きで選択する。複数アーティストの
+  // アーティストを1件、取得範囲(既定Top25)付きで選択する。複数アーティストの
   // 同時指定はできず、新たに選ぶとそれまでの選択を置き換える。
-  // 既定はTop25(確認画面でTop50/全曲に切り替え可能)。
   function confirmArtist(name) {
     artistInput.value = "";
     artistClearBtn.classList.add("hidden");
@@ -258,13 +258,6 @@
   let openPreviewName = null; // クリックでプレビューを開いているアーティスト名
   let openSavedPreviewId = null; // クリックでプレビューを開いている保存済みデータセットのid
   const loadingArtistKeys = new Set(); // `${name}::${scope}` 現在取得中のもの
-  const loadingArtistProgress = new Map(); // `${name}::${scope}` -> {stage, current, total}
-  const PROGRESS_STAGE_LABELS = {
-    deezer: "Deezerから取得中",
-    itunes_catalog: "iTunesのカタログを確認中",
-    ytmusic_match: "YouTube Musicで曲を検索中",
-    itunes_match: "iTunesで曲を検索中",
-  };
 
   // プレビューを開いている時、それ以外の場所をクリックしたら閉じる
   // (流行・アーティスト一覧・保存済み一覧の確認ボタンで共通)。
@@ -280,21 +273,6 @@
     }
   });
 
-  // renderArtistEntries()は取得中の行(中断ボタン含む)をDOMごと毎回作り
-  // 直す。YouTube Musicは曲ごとに個別検索するため進捗コールバックが
-  // 短い間隔で何度も発火し、そのたびに中断ボタンが破棄→再生成されて
-  // クリックしづらくなっていた(「中断が効かない」という報告の原因)。
-  // 進捗表示のための再描画は間引き、直近の状態を一定間隔でまとめて
-  // 反映する(末尾の呼び出しは取りこぼさないよう必ず最後に1回実行する)。
-  let renderArtistEntriesThrottleTimer = null;
-  function renderArtistEntriesThrottled() {
-    if (renderArtistEntriesThrottleTimer) return;
-    renderArtistEntriesThrottleTimer = setTimeout(() => {
-      renderArtistEntriesThrottleTimer = null;
-      renderArtistEntries();
-    }, 400);
-  }
-
   function renderArtistEntries() {
     const wrap = $("artist-chips");
     wrap.innerHTML = "";
@@ -308,20 +286,10 @@
       if (loadingArtistKeys.has(entryKey)) {
         const loadingEl = document.createElement("div");
         loadingEl.className = "artist-entry-loading";
-
-        const loadingRow = document.createElement("div");
-        loadingRow.className = "artist-entry-loading-row";
-
         const loadingText = document.createElement("span");
         loadingText.className = "artist-entry-loading-text";
-        const progress = loadingArtistProgress.get(entryKey);
-        if (progress && progress.total > 0) {
-          const stageLabel = PROGRESS_STAGE_LABELS[progress.stage] || "取得中";
-          loadingText.textContent = `${stageLabel}... (${progress.current}/${progress.total})`;
-        } else {
-          loadingText.textContent = "曲を取得中...(曲数が多いと時間がかかります)";
-        }
-        loadingRow.appendChild(loadingText);
+        loadingText.textContent = "曲を取得中...(曲数が多いと時間がかかります)";
+        loadingEl.appendChild(loadingText);
 
         const cancelBtn = document.createElement("button");
         cancelBtn.type = "button";
@@ -331,18 +299,7 @@
           e.stopPropagation();
           cancelArtistFetch(entry.name, entry.scope);
         });
-        loadingRow.appendChild(cancelBtn);
-        loadingEl.appendChild(loadingRow);
-
-        if (progress && progress.total > 0) {
-          const barOuter = document.createElement("div");
-          barOuter.className = "artist-entry-loading-bar";
-          const barInner = document.createElement("div");
-          barInner.className = "artist-entry-loading-bar-fill";
-          barInner.style.width = `${Math.min(100, Math.round((progress.current / progress.total) * 100))}%`;
-          barOuter.appendChild(barInner);
-          loadingEl.appendChild(barOuter);
-        }
+        loadingEl.appendChild(cancelBtn);
 
         li.appendChild(loadingEl);
       }
@@ -372,7 +329,7 @@
         // 横幅が狭いため、そこを基準にするとプレビューが画面外へはみ出していた。
         preview.className = "artist-entry-preview";
         if (openPreviewName === entry.name) preview.classList.add("is-open");
-        const items = cached.tracks.map(trackPreviewItemHtml).join("");
+        const items = cached.tracks.map((t) => `<li>${escapeHtml(t.title)}</li>`).join("");
         preview.innerHTML = `<strong>${cached.tracks.length}曲取得済み</strong><ul>${items}</ul>`;
 
         confirmBtn = document.createElement("button");
@@ -456,15 +413,11 @@
     artistFetchControllers[key] = controller;
     renderArtistEntries();
     try {
-      const result = await Api.getArtistTracks(name, scope, controller.signal, (progress) => {
-        loadingArtistProgress.set(key, progress);
-        renderArtistEntriesThrottled();
-      });
+      const result = await Api.getArtistTracks(name, scope, controller.signal);
       State.artistTrackCache[key] = result;
       return result;
     } finally {
       loadingArtistKeys.delete(key);
-      loadingArtistProgress.delete(key);
       delete artistFetchControllers[key];
     }
   }
@@ -501,8 +454,8 @@
       if (r.status === "fulfilled" && r.value && r.value.tracks && r.value.tracks.length > 0) {
         resolvedNames.push(r.value.artistName);
         r.value.tracks.forEach((t) => {
-          if (!seenIds.has(t.trackId)) {
-            seenIds.add(t.trackId);
+          if (!seenIds.has(t.videoId)) {
+            seenIds.add(t.videoId);
             merged.push(t);
           }
         });
@@ -568,9 +521,7 @@
   }
 
   // ---- 曲リストの端末保存(localStorage) ----
-  // v1はYouTube videoId時代の保存データ形式で、Deezerのtrackとは互換性が
-  // ないためキーを変えて切り離す(古いv1データはそのまま残るが読み込まれない)。
-  const DATASET_STORAGE_KEY = "introdon.datasets.v2";
+  const DATASET_STORAGE_KEY = "introdon.datasets.v1";
 
   function loadDatasetList() {
     try {
@@ -658,7 +609,7 @@
       const preview = document.createElement("div");
       preview.className = "artist-entry-preview";
       if (openSavedPreviewId === ds.id) preview.classList.add("is-open");
-      const items = ds.tracks.map(trackPreviewItemHtml).join("");
+      const items = ds.tracks.map((t) => `<li>${escapeHtml(t.title)}</li>`).join("");
       preview.innerHTML = `<strong>${ds.tracks.length}曲</strong><ul>${items}</ul>`;
 
       const confirmBtn = document.createElement("button");
@@ -720,15 +671,6 @@
     triggerBtn.disabled = true;
     triggerBtn.textContent = "準備中...";
     activeSlot = 0;
-
-    // iOS Safariは、<audio>要素の最初のplay()がクリック等のユーザー操作から
-    // 「同期的に」つながっている場合に限り自動再生を許可する。非同期処理
-    // (fetch等)を1回でも挟んだ後だとブロックされることがあるため、
-    // prepare()(<audio>要素の生成、同期処理)とunmuteAll()(アンロック)は
-    // このクリックハンドラの先頭で、await を一切挟まずに呼び出す。
-    AudioPlayers.prepare(2);
-    AudioPlayers.unmuteAll();
-
     State.session = Quiz.createSession({
       mode: MODE,
       pool: State.pool,
@@ -737,12 +679,24 @@
     });
     loadCurrentQuestionPlan();
     try {
-      await AudioPlayers.precue(0, currentPlaybackPlan.trackIds[0], currentPlaybackPlan.startSecondsList[0]);
+      // ページ読み込み時の先読み(下部のprepare(2)呼び出し)がまだ完了して
+      // いない場合、ここで待たずにunmuteAll()を呼ぶとpoolが空/不完全なままで
+      // 何もミュート解除されず、1問目だけ無音になる不具合があった。プレーヤーが
+      // 確実に存在する状態にしてからミュート解除する(クリックイベントの
+      // ハンドラチェーン内での呼び出しなので、間にawaitを挟んでも「ユーザー
+      // 操作に基づく」ものとしてブラウザには扱われる)。
+      await YTPlayers.prepare(2);
+      YTPlayers.unmuteAll();
+      await YTPlayers.precue(0, currentPlaybackPlan.videoIds[0], currentPlaybackPlan.startSecondsList[0]);
       if (State.session.questions.length > 1) {
         const secondTrack = State.session.questions[1].tracks[0];
-        await AudioPlayers.precue(1, secondTrack.trackId, 0);
+        await YTPlayers.precue(1, secondTrack.videoId, 0);
       }
-    } catch (e) { /* noop: 先読みの失敗は実害がない(実際の再生時に取り直す) */ }
+    } catch (e) {
+      // prepareが失敗した場合でもミュート解除だけは試みておく(既存プレーヤーが
+      // あれば効く)。
+      YTPlayers.unmuteAll();
+    }
     triggerBtn.disabled = false;
     triggerBtn.textContent = originalLabel;
     showScreen("screen-game");
@@ -759,31 +713,9 @@
     return div.innerHTML;
   }
 
-  // 確認プレビュー用の1曲分の<li>を組み立てる。以下の2種類を色分けして
-  // ハイライトする:
-  // - is-fallback-source: YouTube Musicで見つからず、Deezer/iTunesの
-  //   30秒プレビュー(曲の途中から始まることがある)で再生される曲
-  // - is-uncertain-album: YouTube Musicでは見つかったが、Deezer/iTunes
-  //   のランキングと同じシングル/アルバム名の検索では見つからず、演奏者名
-  //   だけでの検索(ytmusicMatchTier==="artist")や英題/ローマ字表記
-  //   フォールバック(ytmusicMatchTier==="english")で見つかったため、
-  //   別のシングル/アルバム収録の同名異版(Remix・別ミックス等)の可能性が
-  //   ある曲
-  function trackPreviewItemHtml(t) {
-    const title = escapeHtml(t.title);
-    const isFallbackSource = !String(t.trackId).startsWith("ytmusic:");
-    if (isFallbackSource) {
-      return `<li class="is-fallback-source" title="YouTube Musicで見つからず、Deezer/iTunesのプレビュー音源(曲の途中から始まることがあります)で再生されます">${title}</li>`;
-    }
-    if (t.ytmusicMatchTier === "artist" || t.ytmusicMatchTier === "english") {
-      return `<li class="is-uncertain-album" title="Deezer/iTunesのランキングと同じシングル/アルバムでは見つからず、演奏者名等での検索で見つかった音源です。別バージョン(Remix・別ミックス等)の可能性があります">${title}</li>`;
-    }
-    return `<li>${title}</li>`;
-  }
-
   function goHome() {
     stopCountdown();
-    AudioPlayers.destroyAll();
+    YTPlayers.destroyAll();
     State.session = null;
     currentPlaybackPlan = null;
     activeSlot = 0;
@@ -792,17 +724,11 @@
 
   $("game-home").addEventListener("click", goHome);
 
-  let currentPlaybackPlan = null; // {trackIds, startSecondsList, playSeconds}
+  let currentPlaybackPlan = null; // {videoIds, startSecondsList, playSeconds}
   let playbackBusy = false;
   let selectedChoiceIndex = -1; // 十字キーでの選択位置
   let focusedActionBtn = null; // 十字キーでの選択位置(選択肢ではなく"replay"/"skip"にいる場合)
   let introSkipOffset = 0; // 「続きから再生」で加算される開始位置のオフセット(秒)
-  // Deezerのプレビュー音源は曲のフル尺ではなく概ね30秒程度しかない。
-  // track.durationSecondsは曲のフル尺(Deezerのduration)なので、それだけを
-  // 元に「続きから再生」の上限を決めるとプレビュー音源に存在しない範囲へ
-  // シークしてしまう。安全側に倒した推定値でも上限をかけておく(実際の
-  // 音源の長さが判明した時点でaudio-player.js側でも改めてクランプされる)。
-  const PREVIEW_DURATION_SECONDS = 29;
   // 2つのプレーヤーを交互に使う。片方で今の問題を再生している間、もう片方に
   // 次の問題の曲を裏側で読み込んでおく(precue)ことで、実際に切り替わった時の
   // 読み込み開始を早める。
@@ -812,13 +738,11 @@
     const session = State.session;
     const plan = session.getPlaybackPlan();
     currentPlaybackPlan = {
-      trackIds: plan.map((p) => p.track.trackId),
+      videoIds: plan.map((p) => p.track.videoId),
       startSecondsList: plan.map((p) => {
         // 「続きから再生」で進めた分、開始位置を後ろにずらす。
-        // ただし曲の終わり際まで行かないよう、再生できる長さの分は手前で止める
-        // (曲のフル尺ではなく、実際に音源として存在するプレビュー音源の長さを
-        // 基準にする)。
-        const duration = Math.min(p.track.durationSeconds || 0, PREVIEW_DURATION_SECONDS);
+        // ただし曲の終わり際まで行かないよう、再生できる長さの分は手前で止める。
+        const duration = p.track.durationSeconds || 0;
         const maxStart = Math.max(0, Math.floor(duration - session.playSeconds - 1));
         return Math.min(p.startSeconds + introSkipOffset, maxStart);
       }),
@@ -836,7 +760,7 @@
     $("answer-area").classList.remove("is-active");
     $("answer-next").classList.add("hidden");
     // 直前の問題の「もう一度再生」がまだ再生中でも、次の問題へは必ず進めるように
-    // busyフラグを強制的に解除する(古い再生はAudioPlayers側で自動的に打ち切られる)。
+    // busyフラグを強制的に解除する(古い再生はYTPlayers側で自動的に打ち切られる)。
     playbackBusy = false;
     introSkipOffset = 0;
 
@@ -853,7 +777,7 @@
   // 何度も手動で押さないと鳴らない」という状態は、待たせてでも絶対に
   // ユーザーに晒さないでほしいとの明示的な指摘があったため、失敗を表に
   // 出す前にアプリ側で自動的に粘れるだけ粘る。この間、再生できない曲
-  // (brokenTrackIds)への追加もまだ行わない(一時的な失敗を恒久的な
+  // (brokenVideoIds)への追加もまだ行わない(一時的な失敗を恒久的な
   // 再生不可と誤って記録してしまわないようにするため)。
   const SAME_TRACK_AUTO_RETRIES = 5;
 
@@ -861,7 +785,7 @@
   function playCurrentClip({ isFirstPlay = false, retriesLeft = 0, sameTrackRetriesLeft = SAME_TRACK_AUTO_RETRIES } = {}) {
     if (playbackBusy || !currentPlaybackPlan) return;
     playbackBusy = true;
-    const { trackIds, startSecondsList, playSeconds } = currentPlaybackPlan;
+    const { videoIds, startSecondsList, playSeconds } = currentPlaybackPlan;
     const visual = $("player-visual");
     const replayBtn = $("replay-btn");
     const skipBtn = $("skip-ahead-btn");
@@ -880,11 +804,12 @@
     countdownEl.textContent = "•";
     countdownEl.classList.add("is-waiting");
 
-    AudioPlayers.playSegments(trackIds, startSecondsList, playSeconds, () => {
+    YTPlayers.playSegments(videoIds, startSecondsList, playSeconds, () => {
       visual.classList.remove("is-idle");
       countdownEl.classList.remove("is-waiting");
       $("game-caption").textContent = captionText(true);
-    }, activeSlot, updateCountdownDisplay).then((results) => {
+      startCountdown(playSeconds);
+    }, activeSlot).then((results) => {
       stopCountdown();
       countdownEl.classList.remove("is-waiting");
       visual.classList.add("is-idle");
@@ -900,15 +825,15 @@
       // ここまで来て初めて、本当に再生できない曲だった可能性が高いと判断し、
       // 再生不可リストへ記録する(次回以降の出題プールから除外するため)。
       if (anyError) {
-        trackIds.forEach((id) => State.brokenTrackIds.add(id));
-        saveBrokenTrackIdsToStorage(State.brokenTrackIds);
+        videoIds.forEach((id) => State.brokenVideoIds.add(id));
+        saveBrokenVideoIdsToStorage(State.brokenVideoIds);
       }
 
       // 最初の再生に失敗した曲は、エラー表示はせず別の曲へ静かに差し替えて
       // 出題し直す(ユーザーには再生できない曲があったことを見せない)。
       if (anyError && isFirstPlay) {
         playbackBusy = false;
-        if (retriesLeft > 0 && State.session.replaceCurrentTrack([...State.brokenTrackIds])) {
+        if (retriesLeft > 0 && State.session.replaceCurrentTrack([...State.brokenVideoIds])) {
           introSkipOffset = 0; // 別の曲に差し替わったので、開始位置のずらしもリセットする
           loadCurrentQuestionPlan();
           playCurrentClip({ isFirstPlay: true, retriesLeft: retriesLeft - 1 });
@@ -933,9 +858,9 @@
   }
 
   // 次の問題の曲を、今使っていない方のプレーヤーへ裏側で読み込んでおく
-  // (実際の再生時、AudioPlayers.playSegments側は常に自前で音源URLを取り
-  // 直すため、ここでの読み込みはネットワーク/デコードを温めておくだけの
-  // ヒントに過ぎない)。失敗しても実害はないので念のためtry/catchで無視する。
+  // (再生のトリガーは常にplayCurrentClip側のloadVideoByIdのままで、ここでは
+  // 事前のヒントとしてcueVideoById()するだけ)。失敗しても実害はないので
+  // 念のためtry/catchで無視する。
   function precueNextQuestion() {
     const session = State.session;
     if (!session || session.isLastQuestion) return;
@@ -944,7 +869,7 @@
     const track = nextQuestion.tracks[0];
     if (!track) return;
     try {
-      AudioPlayers.precue(1 - activeSlot, track.trackId, 0);
+      YTPlayers.precue(1 - activeSlot, track.videoId, 0);
     } catch (e) { /* noop */ }
   }
 
@@ -955,17 +880,17 @@
 
   $("replay-btn").addEventListener("click", (e) => {
     flashPressed(e.currentTarget);
-    AudioPlayers.unmuteAll();
+    YTPlayers.unmuteAll();
     playCurrentClip();
   });
 
   // イントロが無音だった場合に、直前に流した秒数分だけ開始位置を進めて再生し
-  // 直せるようにする(実際の音量を検知しての自動スキップは手軽にはできないため、
-  // 手動でずらせるようにする代替策)。飛び飛びにならず曲の頭から順番に聞いて
-  // いけるよう、ずらす量は「今まで流した秒数分」ちょうどにする。
+  // 直せるようにする(実際の音量を検知しての自動スキップはIFrame埋め込みの仕組み上
+  // できないため、手動でずらせるようにする代替策)。飛び飛びにならず曲の頭から
+  // 順番に聞いていけるよう、ずらす量は「今まで流した秒数分」ちょうどにする。
   $("skip-ahead-btn").addEventListener("click", (e) => {
     flashPressed(e.currentTarget);
-    AudioPlayers.unmuteAll();
+    YTPlayers.unmuteAll();
     introSkipOffset += currentPlaybackPlan.playSeconds;
     loadCurrentQuestionPlan();
     playCurrentClip();
@@ -975,19 +900,34 @@
     return playing ? "イントロ再生中…" : "この曲は何でしょう?";
   }
 
-  // 以前はDate.now()を起点にした独自の壁時計でカウントダウンしていたが、
-  // バッファリング等で実際の音声が一時停止しても壁時計側は止まらないため、
-  // 曲がまだ鳴っているのにカウントダウンだけ先に0になる、というズレが
-  // 起きていた(YouTube Musicのフル尺ストリームはDeezer/iTunesの短い
-  // プレビューよりバッファリングが起きやすく、このズレが顕在化しやすい)。
-  // AudioPlayers.playSegmentsのonTick(remainingMs)は音声側の実際の残り
-  // 時間(一時停止分を差し引いた実測値)を教えてくれるので、独自の
-  // タイマーは持たずそれをそのまま表示するだけにする。
-  function updateCountdownDisplay(remainingMs) {
-    $("game-countdown").textContent = remainingMs <= 0 ? "0" : String(Math.ceil(remainingMs / 1000));
+  // setIntervalで1回ごとに引き算する方式は、タブの負荷などでずれが積み重なり
+  // 実際の再生終了(こちらもタイマー駆動)との体感差につながっていた。
+  // 経過時間を都度Date.nowから計算し直す方式にして、ずれを抑える。
+  // 100ms間隔でチェックすることで、0.5秒/1.5秒のような1秒未満の設定にも対応する。
+  function startCountdown(totalSeconds) {
+    const totalMs = Math.round(totalSeconds * 1000);
+    const startedAt = Date.now();
+    const el = $("game-countdown");
+
+    const tick = () => {
+      const remainingMs = totalMs - (Date.now() - startedAt);
+      if (remainingMs <= 0) {
+        el.textContent = "0";
+        stopCountdown();
+        return;
+      }
+      el.textContent = Math.ceil(remainingMs / 1000);
+    };
+
+    stopCountdown();
+    tick();
+    State.countdownTimer = setInterval(tick, 100);
   }
   function stopCountdown() {
-    $("game-countdown").textContent = "•";
+    if (State.countdownTimer) {
+      clearInterval(State.countdownTimer);
+      State.countdownTimer = null;
+    }
   }
 
   function openAnswerArea() {
@@ -1005,7 +945,7 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "choice-btn";
-      btn.dataset.trackId = track.trackId;
+      btn.dataset.videoId = track.videoId;
       btn.innerHTML = `<strong>${escapeHtml(track.title)}</strong><small>${escapeHtml(track.artist)}</small>`;
       btn.addEventListener("click", () => selectAnswer(track, btn));
       wrap.appendChild(btn);
@@ -1087,19 +1027,19 @@
   // 画面遷移はせず、4つの選択肢ボタンの上でそのまま正解/不正解を示す。
   function selectAnswer(track, btn) {
     const session = State.session;
-    const entry = session.submitAnswer([track.trackId]);
+    const entry = session.submitAnswer([track.videoId]);
     $("game-score").textContent = scoreLabel(session);
 
-    const correctId = entry.tracks[0].trackId;
+    const correctId = entry.tracks[0].videoId;
     Array.from($("answer-choices").children).forEach((b) => {
       b.disabled = true;
-      if (b.dataset.trackId === correctId) {
+      if (b.dataset.videoId === correctId) {
         b.classList.add("is-correct");
       } else if (b === btn) {
         b.classList.add("is-wrong");
       }
     });
-    $("game-caption").textContent = track.trackId === correctId
+    $("game-caption").textContent = track.videoId === correctId
       ? "正解!"
       : `残念…正解は「${entry.tracks[0].title}」`;
 
@@ -1114,12 +1054,12 @@
   }
 
   $("answer-next").addEventListener("click", () => {
-    AudioPlayers.unmuteAll();
+    YTPlayers.unmuteAll();
     const session = State.session;
     // もう一度再生/続きから再生で曲が流れている最中でも、次へを押したら
     // その再生を打ち切ってすぐ次の問題に進む。
     if (playbackBusy) {
-      AudioPlayers.stop(activeSlot);
+      YTPlayers.stop(activeSlot);
       stopCountdown();
       playbackBusy = false;
     }
@@ -1215,7 +1155,7 @@
       list.appendChild(li);
     });
 
-    AudioPlayers.stopAll();
+    YTPlayers.stopAll();
     showScreen("screen-result");
   }
 
@@ -1223,10 +1163,13 @@
   // 同じ設定(曲プール・問題数・秒数)のままもう一度遊べるようにする。
   $("result-retry").addEventListener("click", () => startGame($("result-retry")));
 
-  // ページ読み込み時点で<audio>要素を先に生成しておく(DOM生成自体は同期処理
-  // だが、「スタート!」クリック時にまとめて行うより早めに済ませておいた方が
-  // 体感の反応が良い)。実際のiOS/Safari向けアンロック(unmuteAll呼び出し)は
-  // クリックハンドラの先頭で同期的に行う必要があるため、ここでは行わない
-  // (startGame内のAudioPlayers.unmuteAll呼び出し箇所を参照)。
-  AudioPlayers.prepare(2);
+  // ページ読み込み時点でプレーヤー(iframe API読み込み含む)を先に用意しておく。
+  // 「スタート!」クリックのタイミングでゼロから生成すると、iframe APIの
+  // 読み込み待ちなどでawaitを挟むことになり、クリックという「ユーザー操作」との
+  // 直接のつながりが失われてしまう。ブラウザの自動再生ポリシーは、ユーザー
+  // 操作から直接つながっていない音声付き自動再生を許可しないことが多く、これが
+  // 「再生中と表示されるのに実際には無音のまま」の不具合の原因だった。事前に
+  // プレーヤーを用意しておけば、クリックハンドラ内でawait無しにunmuteAll()を
+  // 呼べる(YTPlayers.unmuteAll呼び出し箇所を参照)。戻り値は待たなくてよい。
+  YTPlayers.prepare(2);
 })();

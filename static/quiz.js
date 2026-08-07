@@ -26,8 +26,8 @@ const Quiz = (() => {
   }
 
   function pickChoices(pool, correctTracks, numChoices) {
-    const correctIds = new Set(correctTracks.map((t) => t.trackId));
-    const remaining = shuffle(pool.filter((t) => !correctIds.has(t.trackId)));
+    const correctIds = new Set(correctTracks.map((t) => t.videoId));
+    const remaining = shuffle(pool.filter((t) => !correctIds.has(t.videoId)));
     const distractorCount = Math.max(0, Math.min(numChoices - correctTracks.length, remaining.length));
     return shuffle(correctTracks.concat(remaining.slice(0, distractorCount)));
   }
@@ -38,8 +38,8 @@ const Quiz = (() => {
     // ゲーム全体を通して同じ曲が何度も出題されないようにする。プールのユニークな
     // 曲数がnumQuestions分に足りている限り、一度出した曲は避け続ける。プールが
     // 足りない場合のみ(setup-errorで警告済み)、やむを得ず重複を許可する。
-    const usedTrackIds = new Set();
-    const uniqueCount = new Set(pool.map((t) => t.trackId)).size;
+    const usedVideoIds = new Set();
+    const uniqueCount = new Set(pool.map((t) => t.videoId)).size;
 
     for (let q = 0; q < numQuestions; q++) {
       const picked = [];
@@ -48,12 +48,12 @@ const Quiz = (() => {
       while (picked.length < tracksPerQuestion && guard < pool.length * 8 + 40) {
         guard++;
         const track = bag.next();
-        if (seenIds.has(track.trackId)) continue;
-        if (usedTrackIds.has(track.trackId) && usedTrackIds.size < uniqueCount) continue;
-        seenIds.add(track.trackId);
+        if (seenIds.has(track.videoId)) continue;
+        if (usedVideoIds.has(track.videoId) && usedVideoIds.size < uniqueCount) continue;
+        seenIds.add(track.videoId);
         picked.push(track);
       }
-      picked.forEach((t) => usedTrackIds.add(t.trackId));
+      picked.forEach((t) => usedVideoIds.add(t.videoId));
       const numChoices = Math.min(pool.length, tracksPerQuestion * 2 + 2);
       const choices = pickChoices(pool, picked, numChoices);
       questions.push({ tracks: picked, choices });
@@ -94,15 +94,15 @@ const Quiz = (() => {
         }));
       },
 
-      // selectedTrackIds: string[] (単曲モードは要素1個)
-      submitAnswer(selectedTrackIds) {
+      // selectedVideoIds: string[] (単曲モードは要素1個)
+      submitAnswer(selectedVideoIds) {
         const q = this.currentQuestion;
-        const actualIds = q.tracks.map((t) => t.trackId);
-        const selectedSet = new Set(selectedTrackIds);
+        const actualIds = q.tracks.map((t) => t.videoId);
+        const selectedSet = new Set(selectedVideoIds);
         const correctCount = actualIds.filter((id) => selectedSet.has(id)).length;
-        const extraWrong = selectedTrackIds
+        const extraWrong = selectedVideoIds
           .filter((id) => !actualIds.includes(id))
-          .map((id) => this.pool.find((t) => t.trackId === id))
+          .map((id) => this.pool.find((t) => t.videoId === id))
           .filter(Boolean);
 
         const entry = {
@@ -120,30 +120,30 @@ const Quiz = (() => {
       },
 
       // 現在の問題の曲が再生できなかった場合に、別の曲へ静かに差し替える。
-      // excludeTrackIds: 候補から除外するtrackId(再生できないと分かっている曲など)。
+      // excludeVideoIds: 候補から除外するvideoId(再生できないと分かっている曲など)。
       // 差し替え先が見つかればtrue、pool内に候補が残っていなければfalseを返す。
       //
       // 以前は「他の問題と重複しない候補が尽きたら、重複を許容してどれでも選ぶ」
       // フォールバックだったが、これだと再生できる曲が少ないプールで特定の1曲
       // (たまたま再生できた曲)に選択が集中し、同じ曲が何度も出題されてしまう
-      // 不具合があった。再生できない曲(excludeTrackIds)だけは絶対に避けた上で、
+      // 不具合があった。再生できない曲(excludeVideoIds)だけは絶対に避けた上で、
       // 「他の問題で使われている回数が最も少ない曲」を選ぶことで、やむを得ず
       // 重複する場合でも特定の1曲に偏らず均等に分散するようにする。
-      replaceCurrentTrack(excludeTrackIds = []) {
-        const broken = new Set(excludeTrackIds);
-        const nonBroken = pool.filter((t) => !broken.has(t.trackId));
+      replaceCurrentTrack(excludeVideoIds = []) {
+        const broken = new Set(excludeVideoIds);
+        const nonBroken = pool.filter((t) => !broken.has(t.videoId));
         if (nonBroken.length === 0) return false;
 
         const usageCount = new Map();
         questions.forEach((q, i) => {
           if (i === this.currentIndex) return;
           q.tracks.forEach((t) => {
-            usageCount.set(t.trackId, (usageCount.get(t.trackId) || 0) + 1);
+            usageCount.set(t.videoId, (usageCount.get(t.videoId) || 0) + 1);
           });
         });
 
-        const minUsage = Math.min(...nonBroken.map((t) => usageCount.get(t.trackId) || 0));
-        const candidates = nonBroken.filter((t) => (usageCount.get(t.trackId) || 0) === minUsage);
+        const minUsage = Math.min(...nonBroken.map((t) => usageCount.get(t.videoId) || 0));
+        const candidates = nonBroken.filter((t) => (usageCount.get(t.videoId) || 0) === minUsage);
 
         const newTrack = candidates[Math.floor(Math.random() * candidates.length)];
         const numChoices = Math.min(pool.length, tracksPerQuestion * 2 + 2);

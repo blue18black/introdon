@@ -46,7 +46,7 @@ input {
   font-family: inherit;
 }
 
-.audio-players {
+.yt-players {
   position: fixed;
   width: 2px;
   height: 2px;
@@ -114,33 +114,6 @@ input {
   color: var(--ink);
 }
 .logo-accent { color: var(--primary); }
-.logo-version {
-  /* inline-block+paddingだけだと、フォントの行送り・ベースラインの都合で
-     丸の中の文字が下寄りに見えてしまうため、flexで確実に中央揃えする。 */
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  vertical-align: middle;
-  /* vertical-align: middleだけだと、和文グリフの縦の重心とfont-weight:900の
-     太い字形の影響で、バッジがロゴ本体よりわずかに下にずれて見えるため、
-     少し上へ補正する。 */
-  position: relative;
-  top: -0.18em;
-  font-size: 0.55em;
-  font-weight: 700;
-  color: #fff;
-  background: var(--primary);
-  border-radius: 999px;
-  padding: 0.15em 0.6em;
-  margin-left: 0.25em;
-  letter-spacing: 0.03em;
-}
-.logo-version-text {
-  /* 丸(.logo-version、位置・padding担当)自体はズラさず、中の文字だけ
-     フォントの字形の重心に合わせて少し上へ寄せる。 */
-  display: block;
-  transform: translateY(-0.12em);
-}
 
 .tagline {
   margin: 10px 0 0;
@@ -340,22 +313,16 @@ input {
   inset: 0;
   z-index: 10;
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 5px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 4px 8px 4px 12px;
   background: rgba(245, 245, 247, 0.94);
   border-radius: 10px;
   font-size: 0.72rem;
   font-weight: 700;
   color: var(--ink);
-}
-.artist-entry-loading-row {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
 }
 .artist-entry-loading-text {
   flex: 1 1 auto;
@@ -373,20 +340,6 @@ input {
   color: var(--danger);
 }
 .artist-entry-loading-cancel:active { transform: translateY(1px); }
-.artist-entry-loading-bar {
-  flex: 0 0 auto;
-  width: 100%;
-  height: 4px;
-  border-radius: 999px;
-  background: var(--border);
-  overflow: hidden;
-}
-.artist-entry-loading-bar-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: var(--primary);
-  transition: width 0.2s ease;
-}
 
 .artist-entry-confirm {
   flex: 0 0 auto;
@@ -402,23 +355,6 @@ input {
 .artist-entry-preview strong { display: block; font-size: 0.78rem; opacity: 0.6; margin-bottom: 4px; }
 .artist-entry-preview ul { margin: 0; padding-left: 16px; }
 .artist-entry-preview li { margin-bottom: 2px; }
-/* YouTube Musicの音源が見つからず、Deezer/iTunesの30秒プレビュー(曲の
-   途中から始まることがある)で再生される曲を確認画面で見分けられるように
-   ハイライトする。 */
-.artist-entry-preview li.is-fallback-source {
-  color: #b45309;
-  background: rgba(217, 119, 6, 0.12);
-  border-radius: 4px;
-  padding: 0 4px;
-}
-/* YouTube Music音源は見つかったが、ランキングと同じシングル/アルバムでの
-   一致ではなく演奏者名等でのフォールバック一致のため、別版の可能性がある曲。 */
-.artist-entry-preview li.is-uncertain-album {
-  color: #6d28d9;
-  background: rgba(124, 58, 237, 0.12);
-  border-radius: 4px;
-  padding: 0 4px;
-}
 .artist-entry-scope {
   flex: 0 0 auto;
   display: flex;
