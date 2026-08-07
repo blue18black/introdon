@@ -61,14 +61,22 @@ def _throttle():
         _last_request_at = time.monotonic()
 
 
-def _get(url, params, retries=2):
+def _get(url, params, retries=4):
     """iTunes側は緩いレート制限があり、特にアルバム数の多いアーティストの
     全曲取得時(アルバムごとに何十回もリクエストする)に一部だけ一時的に
     失敗することがあった。これが実行のたびに結果件数が変わる原因になって
     いたため、Deezer側の_getと同様に少し間を置いて再試行する。また、
     レート制限にかかった応答(403等)がエラーにならず空のJSONとして
     静かに返ってくることがあり、それを「結果0件」と誤解して見逃していた
-    ため、ステータスコードも明示的に確認する。"""
+    ため、ステータスコードも明示的に確認する。
+
+    レート制限の解除にかかる時間は環境(サーバーの回線・IP)によって差が
+    あり、固定の短い待ち時間だけでは足りずに結局そのアルバム分を
+    諦めてしまうことがあった(_ARTIST_MERGE_GROUPSでiTunes側の追加
+    アーティストIDを束ねるようになり、1アーティストあたりのリクエスト数が
+    倍増したことで発生頻度が上がった)。retriesを増やし、待ち時間も
+    リトライのたびに伸ばす(指数バックオフ)ことで、レート制限が長引く
+    場合でも回復を待ちやすくする。"""
     last_exc = None
     for attempt in range(retries + 1):
         _throttle()
@@ -80,7 +88,7 @@ def _get(url, params, retries=2):
         except Exception as e:
             last_exc = e
             if attempt < retries:
-                time.sleep(0.6)
+                time.sleep(0.6 * (2 ** attempt))
     if last_exc:
         return None
     return None
