@@ -28,7 +28,6 @@ iTunesの/lookupはentity=songで直接アーティストの曲一覧を取れ�
 Deezerと同じく「アーティスト→アルバム一覧→アルバムごとの曲一覧」の
 形で辿ることでこの上限を回避する。
 """
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -62,22 +61,14 @@ def _throttle():
         _last_request_at = time.monotonic()
 
 
-def _get(url, params, retries=4):
+def _get(url, params, retries=2):
     """iTunes側は緩いレート制限があり、特にアルバム数の多いアーティストの
     全曲取得時(アルバムごとに何十回もリクエストする)に一部だけ一時的に
     失敗することがあった。これが実行のたびに結果件数が変わる原因になって
     いたため、Deezer側の_getと同様に少し間を置いて再試行する。また、
     レート制限にかかった応答(403等)がエラーにならず空のJSONとして
     静かに返ってくることがあり、それを「結果0件」と誤解して見逃していた
-    ため、ステータスコードも明示的に確認する。
-
-    レート制限の解除にかかる時間は環境(サーバーの回線・IP)によって差が
-    あり、固定の短い待ち時間だけでは足りずに結局そのアルバム分を
-    諦めてしまうことがあった(_ARTIST_MERGE_GROUPSでiTunes側の追加
-    アーティストIDを束ねるようになり、1アーティストあたりのリクエスト数が
-    倍増したことで発生頻度が上がった)。retriesを増やし、待ち時間も
-    リトライのたびに伸ばす(指数バックオフ)ことで、レート制限が長引く
-    場合でも回復を待ちやすくする。"""
+    ため、ステータスコードも明示的に確認する。"""
     last_exc = None
     for attempt in range(retries + 1):
         _throttle()
@@ -89,7 +80,7 @@ def _get(url, params, retries=4):
         except Exception as e:
             last_exc = e
             if attempt < retries:
-                time.sleep(0.6 * (2 ** attempt))
+                time.sleep(0.6)
     if last_exc:
         return None
     return None
@@ -186,22 +177,6 @@ def _fetch_artist_albums(artist_id):
     return [r for r in results if r.get("wrapperType") == "collection"]
 
 
-_COLLECTION_TYPE_SUFFIX_RE = re.compile(r"\s*-\s*(EP|Single|Album)\s*$", re.IGNORECASE)
-
-
-def _strip_collection_type_suffix(collection_name):
-    """iTunesのcollectionNameには"どどどどどりーまー - EP"のように末尾へ
-    盤種別(EP/Single/Album)が付与されている。Deezer側の同じ曲のalbum.title
-    にはこの付与が無く("どどどどどりーまー")、_album_titleはYouTube Music
-    検索のクエリ補助語としてそのまま使われる(deezer_service._query_
-    suffixes_for参照)ため、Deezer由来かiTunes由来かで検索クエリの
-    ノイズが変わってしまう。検索精度をDeezer由来の曲と揃えるため、この
-    付与を取り除く。"""
-    if not collection_name:
-        return collection_name
-    return _COLLECTION_TYPE_SUFFIX_RE.sub("", collection_name).strip()
-
-
 def _fetch_album_tracks(album):
     data = _get(
         _LOOKUP_API_BASE,
@@ -210,7 +185,7 @@ def _fetch_album_tracks(album):
     results = (data or {}).get("results", [])
     tracks = [r for r in results if r.get("wrapperType") == "track"]
     for t in tracks:
-        t["_album_title"] = _strip_collection_type_suffix(album.get("collectionName"))
+        t["_album_title"] = album.get("collectionName")
         t["_album_cover"] = album.get("artworkUrl100")
     return tracks
 

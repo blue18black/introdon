@@ -726,8 +726,8 @@
     // (fetch等)を1回でも挟んだ後だとブロックされることがあるため、
     // prepare()(<audio>要素の生成、同期処理)とunmuteAll()(アンロック)は
     // このクリックハンドラの先頭で、await を一切挟まずに呼び出す。
-    Players.prepare(2);
-    Players.unmuteAll();
+    AudioPlayers.prepare(2);
+    AudioPlayers.unmuteAll();
 
     State.session = Quiz.createSession({
       mode: MODE,
@@ -737,10 +737,10 @@
     });
     loadCurrentQuestionPlan();
     try {
-      await Players.precue(0, currentPlaybackPlan.trackIds[0], currentPlaybackPlan.startSecondsList[0]);
+      await AudioPlayers.precue(0, currentPlaybackPlan.trackIds[0], currentPlaybackPlan.startSecondsList[0]);
       if (State.session.questions.length > 1) {
         const secondTrack = State.session.questions[1].tracks[0];
-        await Players.precue(1, secondTrack.trackId, 0);
+        await AudioPlayers.precue(1, secondTrack.trackId, 0);
       }
     } catch (e) { /* noop: 先読みの失敗は実害がない(実際の再生時に取り直す) */ }
     triggerBtn.disabled = false;
@@ -783,7 +783,7 @@
 
   function goHome() {
     stopCountdown();
-    Players.destroyAll();
+    AudioPlayers.destroyAll();
     State.session = null;
     currentPlaybackPlan = null;
     activeSlot = 0;
@@ -792,136 +792,7 @@
 
   $("game-home").addEventListener("click", goHome);
 
-  // ytmusic:曲(YouTube Music由来のフル尺音源)とdeezer:/itunes:曲(30秒
-  // プレビュー)とで、実際の再生方式が異なる(前者はYouTube iframe再生
-  // (YTPlayers)、後者はネイティブ<audio>要素再生(AudioPlayers))。1問に
-  // 両方が混ざりうる(同時再生モード等)ため、AudioPlayers/YTPlayersと同じ
-  // インターフェースを持つ薄いディスパッチャでtrackIdの接頭辞に応じて
-  // 振り分ける。呼び出し側(startGame/playCurrentClip等)はPlayersだけを
-  // 意識すればよい。
-  const YTMUSIC_ID_PREFIX = "ytmusic:";
-  const Players = {
-    isYtMusic(trackId) {
-      return typeof trackId === "string" && trackId.startsWith(YTMUSIC_ID_PREFIX);
-    },
-    stripYtPrefix(trackId) {
-      return trackId.slice(YTMUSIC_ID_PREFIX.length);
-    },
-    // count分のプレーヤーを両方式分先行生成しておく(同期呼び出し、詳細は
-    // 各prepare実装のコメント参照)。
-    prepare(count) {
-      AudioPlayers.prepare(count);
-      YTPlayers.prepare(count);
-    },
-    // iOS Safari向けのアンロック。ユーザー操作のクリックハンドラの中で
-    // awaitを挟まず同期的に呼ぶ必要がある(両実装のコメント参照)。
-    unmuteAll() {
-      AudioPlayers.unmuteAll();
-      YTPlayers.unmuteAll();
-    },
-    // 指定スロットにどちらの方式のプレーヤーが今読み込まれているかは
-    // 呼び出し側では分からないため、両方に対して打ち切りを試みる(使って
-    // いない側は何もしていないプレーヤーを止めるだけの無害な操作になる)。
-    stop(playerIndex) {
-      AudioPlayers.stop(playerIndex);
-      YTPlayers.stop(playerIndex);
-    },
-    stopAll() {
-      AudioPlayers.stopAll();
-      YTPlayers.stopAll();
-    },
-    destroyAll() {
-      AudioPlayers.destroyAll();
-      YTPlayers.destroyAll();
-    },
-    async precue(playerIndex, trackId, startSeconds) {
-      if (this.isYtMusic(trackId)) {
-        return YTPlayers.precue(playerIndex, this.stripYtPrefix(trackId), startSeconds);
-      }
-      return AudioPlayers.precue(playerIndex, trackId, startSeconds);
-    },
-    // trackIds/fallbackTrackIds/startSecondsListは同じ長さの配列。
-    // fallbackTrackIdsは、YouTube Music音源(iframe再生)がエラーになった時に
-    // その場で差し替える元のDeezer/iTunesプレビューのtrackId(無ければnull)。
-    // startPlayerIndexは両方式で共通のスロット番号(AudioPlayers側の
-    // プールとYTPlayers側のプールは別々に管理されているため、同じ番号を
-    // 使っても衝突しない)。戻り値はtrackIdsと同じ順の[{error}, ...]。
-    async playSegments(trackIds, fallbackTrackIds, startSecondsList, playSeconds, onStart, startPlayerIndex = 0, onTick) {
-      let started = false;
-      const handleStart = () => {
-        if (started) return;
-        started = true;
-        if (onStart) onStart();
-      };
-
-      const results = new Array(trackIds.length);
-      const ytIndices = [];
-      const ytVideoIds = [];
-      const ytFallbackIds = [];
-      const ytStartSeconds = [];
-      const audioIndices = [];
-      const audioTrackIds = [];
-      const audioStartSeconds = [];
-
-      trackIds.forEach((id, i) => {
-        if (this.isYtMusic(id)) {
-          ytIndices.push(i);
-          ytVideoIds.push(this.stripYtPrefix(id));
-          ytFallbackIds.push((fallbackTrackIds && fallbackTrackIds[i]) || null);
-          ytStartSeconds.push(startSecondsList[i]);
-        } else {
-          audioIndices.push(i);
-          audioTrackIds.push(id);
-          audioStartSeconds.push(startSecondsList[i]);
-        }
-      });
-
-      // onTickは先頭の曲(trackIds[0])専用。trackIds[0]がどちらの方式かに
-      // 応じて、対応する側の呼び出しにだけ渡す。
-      const firstIsYt = trackIds.length > 0 && this.isYtMusic(trackIds[0]);
-
-      const tasks = [];
-      if (audioTrackIds.length) {
-        tasks.push(
-          AudioPlayers.playSegments(
-            audioTrackIds, audioStartSeconds, playSeconds,
-            handleStart, startPlayerIndex, firstIsYt ? undefined : onTick,
-          ).then((rs) => rs.forEach((r, j) => { results[audioIndices[j]] = r; }))
-        );
-      }
-      if (ytVideoIds.length) {
-        tasks.push(
-          YTPlayers.playSegments(
-            ytVideoIds, ytStartSeconds, playSeconds,
-            handleStart, startPlayerIndex, firstIsYt ? onTick : undefined,
-          ).then(async (rs) => {
-            // iframe再生自体が失敗した曲(動画が削除/非公開等、検索時点では
-            // わからなかったケース)は、そのままだと呼び出し側が曲そのものを
-            // 差し替えてしまう。まずはその場でDeezer/iTunesの元プレビューへの
-            // フォールバックを試す方が復帰が速い(_fallback_id参照)。
-            const retryTasks = [];
-            rs.forEach((r, j) => {
-              const globalIdx = ytIndices[j];
-              if (r.error && ytFallbackIds[j]) {
-                retryTasks.push(
-                  AudioPlayers.playSegments(
-                    [ytFallbackIds[j]], [0], playSeconds, handleStart, startPlayerIndex + trackIds.length + j,
-                  ).then((fr) => { results[globalIdx] = fr[0]; })
-                );
-              } else {
-                results[globalIdx] = r;
-              }
-            });
-            await Promise.all(retryTasks);
-          })
-        );
-      }
-      await Promise.all(tasks);
-      return results;
-    },
-  };
-
-  let currentPlaybackPlan = null; // {trackIds, fallbackTrackIds, startSecondsList, playSeconds}
+  let currentPlaybackPlan = null; // {trackIds, startSecondsList, playSeconds}
   let playbackBusy = false;
   let selectedChoiceIndex = -1; // 十字キーでの選択位置
   let focusedActionBtn = null; // 十字キーでの選択位置(選択肢ではなく"replay"/"skip"にいる場合)
@@ -942,7 +813,6 @@
     const plan = session.getPlaybackPlan();
     currentPlaybackPlan = {
       trackIds: plan.map((p) => p.track.trackId),
-      fallbackTrackIds: plan.map((p) => p.track.fallbackTrackId || null),
       startSecondsList: plan.map((p) => {
         // 「続きから再生」で進めた分、開始位置を後ろにずらす。
         // ただし曲の終わり際まで行かないよう、再生できる長さの分は手前で止める
@@ -991,7 +861,7 @@
   function playCurrentClip({ isFirstPlay = false, retriesLeft = 0, sameTrackRetriesLeft = SAME_TRACK_AUTO_RETRIES } = {}) {
     if (playbackBusy || !currentPlaybackPlan) return;
     playbackBusy = true;
-    const { trackIds, fallbackTrackIds, startSecondsList, playSeconds } = currentPlaybackPlan;
+    const { trackIds, startSecondsList, playSeconds } = currentPlaybackPlan;
     const visual = $("player-visual");
     const replayBtn = $("replay-btn");
     const skipBtn = $("skip-ahead-btn");
@@ -1010,7 +880,7 @@
     countdownEl.textContent = "•";
     countdownEl.classList.add("is-waiting");
 
-    Players.playSegments(trackIds, fallbackTrackIds, startSecondsList, playSeconds, () => {
+    AudioPlayers.playSegments(trackIds, startSecondsList, playSeconds, () => {
       visual.classList.remove("is-idle");
       countdownEl.classList.remove("is-waiting");
       $("game-caption").textContent = captionText(true);
@@ -1074,7 +944,7 @@
     const track = nextQuestion.tracks[0];
     if (!track) return;
     try {
-      Players.precue(1 - activeSlot, track.trackId, 0);
+      AudioPlayers.precue(1 - activeSlot, track.trackId, 0);
     } catch (e) { /* noop */ }
   }
 
@@ -1085,7 +955,7 @@
 
   $("replay-btn").addEventListener("click", (e) => {
     flashPressed(e.currentTarget);
-    Players.unmuteAll();
+    AudioPlayers.unmuteAll();
     playCurrentClip();
   });
 
@@ -1095,7 +965,7 @@
   // いけるよう、ずらす量は「今まで流した秒数分」ちょうどにする。
   $("skip-ahead-btn").addEventListener("click", (e) => {
     flashPressed(e.currentTarget);
-    Players.unmuteAll();
+    AudioPlayers.unmuteAll();
     introSkipOffset += currentPlaybackPlan.playSeconds;
     loadCurrentQuestionPlan();
     playCurrentClip();
@@ -1244,12 +1114,12 @@
   }
 
   $("answer-next").addEventListener("click", () => {
-    Players.unmuteAll();
+    AudioPlayers.unmuteAll();
     const session = State.session;
     // もう一度再生/続きから再生で曲が流れている最中でも、次へを押したら
     // その再生を打ち切ってすぐ次の問題に進む。
     if (playbackBusy) {
-      Players.stop(activeSlot);
+      AudioPlayers.stop(activeSlot);
       stopCountdown();
       playbackBusy = false;
     }
@@ -1345,7 +1215,7 @@
       list.appendChild(li);
     });
 
-    Players.stopAll();
+    AudioPlayers.stopAll();
     showScreen("screen-result");
   }
 
@@ -1358,5 +1228,5 @@
   // 体感の反応が良い)。実際のiOS/Safari向けアンロック(unmuteAll呼び出し)は
   // クリックハンドラの先頭で同期的に行う必要があるため、ここでは行わない
   // (startGame内のAudioPlayers.unmuteAll呼び出し箇所を参照)。
-  Players.prepare(2);
+  AudioPlayers.prepare(2);
 })();

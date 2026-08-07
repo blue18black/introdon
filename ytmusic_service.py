@@ -43,62 +43,13 @@ DeezerとiTunesで同じ曲が同じように途中から始まる事例が確�
 内部仕様変更でyt-dlpが追従できず突然動かなくなることがある(Deezer/iTunes
 の公開APIより壊れやすい)。
 """
-import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
-import requests
 from ytmusicapi import YTMusic
 import yt_dlp
 
-# location未指定だとリクエスト元IPのジオロケーションから国を推測するため、
-# 海外データセンター(Render等)からだと日本限定配信の曲がカタログに出ず
-# 検索でヒットしなくなる。サーバーの場所に関係なく日本のカタログで検索
-# されるよう明示する。
-_yt = YTMusic(language="ja", location="JP")
-
-_embed_session = requests.Session()
-_embed_session.headers.update({"User-Agent": "Mozilla/5.0"})
-
-
-def is_embeddable(video_id):
-    """YouTubeのoEmbedエンドポイントで、動画が埋め込み再生(YouTube iframe
-    プレーヤー)できるかを事前確認する。アップロード側が埋め込みを許可して
-    いない動画は401、削除/非公開になった動画は404を返す。YouTube Music上の
-    ATV(音声のみ版、レーベルが自動生成した"topic"扱いの動画)は、レーベルが
-    埋め込みを許可していないことが珍しくなく、これがイントロクイズ側の
-    iframe再生で「曲が流れない」の主要因になっていた(yt-dlpによる直接抽出
-    ではこの制限を受けなかったため、iframe再生方式に戻した際に表面化した)。
-    ここで弾いておくことで、出題時にその問題に当たる頻度そのものを減らす。
-
-    401/404以外の失敗(タイムアウト等)は、曲数の多いアーティストを一気に
-    並列チェックした時にYouTube側から一時的にレート制限され、本来「再生
-    不可」なはずの曲まで巻き添えで「再生不可」扱いになってしまうことが
-    あった。間を置いて1回だけ再試行し、それでも判定できない場合は誤って
-    曲を減らさないよう埋め込み可能とみなす(それでも本当に再生できない曲は、
-    クイズ側の差し替えロジック・fallback_idによる代替再生が最終的な保険に
-    なる)。"""
-    url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-    for attempt in range(2):
-        try:
-            res = _embed_session.get(url, timeout=4)
-            if res.status_code in (401, 404):
-                return False
-            return True
-        except Exception:
-            if attempt == 0:
-                time.sleep(0.5)
-    return True
-
-
-def filter_embeddable(video_ids):
-    """video_idsのうち埋め込み再生できるものだけの集合を返す。"""
-    if not video_ids:
-        return set()
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(is_embeddable, video_ids))
-    return {vid for vid, ok in zip(video_ids, results) if ok}
+_yt = YTMusic()
 
 # Deezer/iTunes側と同様、ytmusicapiの内部リクエストも一時的なネットワーク
 # エラー/レート制限で失敗することがあるため、失敗時は間を置いて再試行する。
@@ -107,17 +58,9 @@ def filter_embeddable(video_ids):
 # 経験したのと同じ「一部だけ一時的に失敗し、実行のたびに結果(どの曲が
 # YouTube Musicで見つかるか)がブレる」問題が起きていた。iTunes側の_get
 # と同様、全スレッド共通で最小間隔を空けるグローバルなスロットルを設ける。
-#
-# 実際にRenderの本番ログで観測したところ、全曲取得(150曲超)の終盤で
-# 検索結果の精度が落ち、一致する候補が見つからない曲がまとまって発生
-# していた(例外は一切発生していないため、リクエスト自体は拒否されて
-# いない)。rank=0のiTunes補完曲は常にリストの末尾に来るため、末尾ほど
-# それまでの累積リクエスト数が多い状態で検索することになる。エラーには
-# ならないが検索結果の精度が落ちる、緩やかな流量制限にかかっている
-# 可能性が高いため、間隔を広げて累積リクエスト密度を下げる。
 _rate_limit_lock = threading.Lock()
 _last_request_at = 0.0
-_MIN_REQUEST_INTERVAL_SECONDS = 0.45
+_MIN_REQUEST_INTERVAL_SECONDS = 0.25
 
 
 def _throttle():
@@ -130,60 +73,33 @@ def _throttle():
         _last_request_at = time.monotonic()
 
 
-def _retry(fn, retries=4, delay=1.0, default=None, label=None):
-    """delayは初回リトライ時の待ち時間。レート制限の解除にかかる時間は
-    環境(サーバーの回線・IP)によって差があり、固定の短い待ち時間だけでは
-    足りずに結局諦めてしまうことがあったため、iTunes側(itunes_service._get)
-    と同様にリトライのたびに待ち時間を伸ばす(指数バックオフ)。
-
-    従来は例外を握りつぶすだけでログに何も残らず、「検索したが見つから
-    なかった(結果0件)」のか「リクエスト自体が失敗し続けている(ネット
-    ワークエラー・レート制限・ブロック等)」のかを実行環境(特にログしか
-    確認できないRender上)で区別できなかった。全リトライを使い切って
-    諦める時だけ、最後の例外の内容を標準エラー出力に残す(1曲ごとに毎回
-    出すと大量になるため、最終的に諦めた時だけに絞る)。"""
-    last_exc = None
+def _retry(fn, retries=4, delay=1.0, default=None):
     for attempt in range(retries + 1):
         _throttle()
         try:
             return fn()
-        except Exception as e:
-            last_exc = e
+        except Exception:
             if attempt < retries:
-                time.sleep(delay * (2 ** attempt))
-    if last_exc is not None:
-        print(f"[ytmusic_service] {label or fn}: retries exhausted: {last_exc!r}", file=sys.stderr)
+                time.sleep(delay)
     return default
 
 
-def search_songs(query, limit=20):
+def search_songs(query, limit=8):
     """曲名等でYouTube Musicの"songs"(動画扱いのMVを除いた音声トラック)を
-    検索する。失敗時は空リスト。
-
-    limitはデフォルト8だったが、呼び出し側(deezer_service._search_
-    ytmusic_audio)は曲名が一致する最初のATV(音声のみ版)候補を採用する
-    ため、目的の候補が検索結果の上位8件より下に埋もれていると見つからない
-    (マイナー・旧名義曲ほど起きやすい)。1回のリクエストで返る件数を
-    増やすだけで追加のAPI呼び出しコストは無いため、広げておく。"""
-    return _retry(
-        lambda: _yt.search(query, filter="songs", limit=limit),
-        default=[], label=f"search_songs({query!r})",
-    ) or []
+    検索する。失敗時は空リスト。"""
+    return _retry(lambda: _yt.search(query, filter="songs", limit=limit), default=[]) or []
 
 
 def search_albums(query, limit=3):
     """アーティスト名+アルバム名でYouTube Musicのアルバム(シングル/EP含む)
     を検索する。曲名検索で見つからない曲の最終手段(対象アルバムのトラック
     リストを直接見に行く)用。失敗時は空リスト。"""
-    return _retry(
-        lambda: _yt.search(query, filter="albums", limit=limit),
-        default=[], label=f"search_albums({query!r})",
-    ) or []
+    return _retry(lambda: _yt.search(query, filter="albums", limit=limit), default=[]) or []
 
 
 def get_album_tracks(browse_id):
     """アルバムのbrowseIdからトラックリストを取得する。失敗時は空リスト。"""
-    album = _retry(lambda: _yt.get_album(browse_id), label=f"get_album({browse_id!r})")
+    album = _retry(lambda: _yt.get_album(browse_id))
     return (album or {}).get("tracks") or []
 
 

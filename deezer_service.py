@@ -10,9 +10,7 @@
 本体と版表記(Live/Remix等)が"title"/"title_version"として別フィールドで
 分離されているため、ライブ/インスト等の版違いも文字列パースに頼らず確実に検出できる。
 """
-import random
 import re
-import sys
 import threading
 import time
 import unicodedata
@@ -29,15 +27,7 @@ _API_BASE = "https://api.deezer.com"
 
 def _make_session():
     session = requests.Session()
-    # Accept-Languageを指定しないと、リクエスト元IPのジオロケーションから
-    # 言語/カタログ版を推測するため、海外データセンター(Render等)からだと
-    # 日本語表記があるはずの曲がローマ字表記(国際流通版)で返ってくることが
-    # ある(例:超ときめき♡宣伝部「青春アンセム」がSeishun Anthem表記になる)。
-    # サーバーの場所に関係なく日本語表記を優先させる。
-    session.headers.update({
-        "User-Agent": "introdon2/1.0",
-        "Accept-Language": "ja-JP,ja;q=0.9",
-    })
+    session.headers.update({"User-Agent": "introdon2/1.0"})
     return session
 
 
@@ -499,12 +489,6 @@ def _to_quiz_track(raw, artist_name, album_title=None, album_cover=None):
         # (_apply_ytmusic_audio_override参照)。ytmusic:以外(iTunes/Deezerの
         # ままの曲)ではNone。
         "ytmusicMatchTier": raw.get("_ytmusic_match_tier"),
-        # 差し替え前の元の音源ID(Deezer/iTunes)。再生直前の音源取得
-        # (/api/track_audio)がこの曲のidで失敗した場合、フロントエンドが
-        # 曲を丸ごと差し替える前にまずこちらへフォールバックする
-        # (_apply_ytmusic_audio_override参照)。差し替えが起きていない曲では
-        # None。
-        "fallbackTrackId": str(raw["_fallback_id"]) if raw.get("_fallback_id") is not None else None,
     }
 
 
@@ -513,21 +497,6 @@ def _to_quiz_track(raw, artist_name, album_title=None, album_cover=None):
 def _search_artists(query, limit=10):
     data = _get("/search/artist", {"q": query, "limit": limit})
     return (data or {}).get("data", [])
-
-
-# 完全一致が無い場合に「アルバム数が最大の候補」を採用する仕組み
-# (find_target_artist参照、米津玄師/Kenshi Yonezuのようなローマ字表記
-# 分裂に対応するためのもの)が、たまたま名前が似ているだけの無関係な
-# 別アーティストを誤って採用してしまうことがある(実例:「Mr.Children」で
-# 検索すると本物の"Mr. Children"はDeezer上でアルバム数0件のスタブのみ
-# (=Deezerにカタログ自体が無い)で、無関係な海外バンド"MyChildren
-# MyBride"(artist_id=241603)がアルバム数最大として選ばれてしまって
-# いた)。文字列の類似度だけでは「表記違いの同一人物」と「たまたま似て
-# いるだけの別人」を機械的に区別できないため、個別に確認済みの誤マッチ
-# のDeezer artist_idをここに登録し、候補から除外する。
-_ARTIST_ID_BLOCKLIST = {
-    241603,  # MyChildren MyBride(「Mr.Children」で誤って採用されていた無関係な海外バンド)
-}
 
 
 def find_target_artist(artist_name):
@@ -542,13 +511,8 @@ def find_target_artist(artist_name):
     方を選んでしまう(例:「米津玄師」で検索すると、本体は"Kenshi Yonezu"
     (41アルバム)として登録されており、"米津玄師"という完全一致エントリは
     0アルバムのスタブ)。そのため、完全一致であってもアルバム数が0の候補は
-    信用せず、その場合はアルバム数が最大の候補を採用する。ただし
-    _ARTIST_ID_BLOCKLISTに登録された既知の誤マッチ候補は除外する
-    (「Deezerにこのアーティストのカタログが無い」場合の代替候補として、
-    無関係な別アーティストが採用されてしまうケースへの対処。詳細は
-    _ARTIST_ID_BLOCKLIST参照)。"""
+    信用せず、その場合はアルバム数が最大の候補を採用する。"""
     results = _search_artists(artist_name, limit=10)
-    results = [r for r in results if r.get("id") not in _ARTIST_ID_BLOCKLIST]
     if not results:
         return None
     query_norm = artist_name.strip().lower()
@@ -599,12 +563,6 @@ _ARTIST_MERGE_GROUPS = [
             229486035, 238203301, 11300134,
             334225451, 293591331, 339946441, 361398382, 323086021, 295264651,
         ],
-        # iTunes側の自動解決(find_artist_id)は「超ときめき♡宣伝部」で検索
-        # して見つかる1アーティストページ(新名義)しか見ない。旧名義
-        # 「ときめき宣伝部」時代の曲(Deezer側のfetch_ids 238203301/11300134
-        # に相当)はiTunes上では別アーティストID(1166362525)に分裂登録されて
-        # いるため、ここに追加して_fetch_itunes_catalogで束ねて取得する。
-        "itunes_extra_artist_ids": [1166362525],
         # メンバー別ユニット曲が"曲名／メンバー名"の形式でタイトルに直接
         # クレジットされている(コンサート音源は"曲名／メンバー名(Concert
         # ...)"の形式)。私立恵比寿中学のユニットアルバムと似ているが、
@@ -918,33 +876,19 @@ def _itunes_track_to_raw_shape(t):
     }
 
 
-def _fetch_itunes_catalog(canonical_name, on_progress=None, extra_artist_ids=None):
+def _fetch_itunes_catalog(canonical_name, on_progress=None):
     """アーティストのiTunes上の全曲を、Deezer側と同じ形に整形・フィルタ・
     重複排除した状態で返す。(1)Deezerに無い曲の補完、(2)Deezer由来の曲の
     再生音源をiTunes側に差し替える、の両方の元データとして使う。iTunes
     側の検索・取得に失敗しても(レート制限、ネットワークエラー等)Deezerの
-    結果には一切影響させず、空リストを返す。
-
-    extra_artist_idsは、canonical_name検索では見つからない別アーティスト
-    ページ(改名前の旧名義等、_ARTIST_MERGE_GROUPSのitunes_extra_artist_ids
-    参照)のIDを追加で束ねて取得したい場合に指定する。"""
-    artist_ids = []
+    結果には一切影響させず、空リストを返す。"""
     try:
         itunes_artist_id = itunes_service.find_artist_id(canonical_name)
-        if itunes_artist_id is not None:
-            artist_ids.append(itunes_artist_id)
+        if itunes_artist_id is None:
+            return []
+        raw = itunes_service.fetch_all_tracks_raw(itunes_artist_id, on_progress=on_progress)
     except Exception:
-        pass
-    artist_ids.extend(extra_artist_ids or [])
-    if not artist_ids:
         return []
-
-    raw = []
-    for artist_id in artist_ids:
-        try:
-            raw.extend(itunes_service.fetch_all_tracks_raw(artist_id, on_progress=on_progress))
-        except Exception:
-            continue
 
     adapted = [_itunes_track_to_raw_shape(t) for t in raw]
     _clean_titles_in_place(adapted)
@@ -1267,18 +1211,6 @@ def _find_ytmusic_audio_for_track(
         matched = _search_ytmusic_audio_by_album_browse(title, candidate_album, track_artist_name)
         if matched:
             return matched, "album"
-    # ここまでの全手段(曲名+アルバム名/演奏者名、英題フォールバック、
-    # アルバムブラウズ)を試しても見つからなかった場合。検索リクエスト
-    # 自体は失敗していない(失敗していればytmusic_service._retry側で
-    # 別途ログが出る)ため、これは「純粋に一致する候補が無かった」ケース。
-    # ローカルでは再現しない失敗がRender上でだけ起きる場合、この行が
-    # 出るかどうかで「検索は試みたが見つからなかった」のか「そもそも
-    # ここまで処理が到達していない」のかを切り分けられる。
-    print(
-        f"[deezer_service] no ytmusic match for title={title!r} album={album_title!r} "
-        f"artist={track_artist_name!r} plain_album={plain_album_title!r} english={english_title!r}",
-        file=sys.stderr,
-    )
     return None, None
 
 
@@ -1292,22 +1224,10 @@ def _apply_ytmusic_audio_override(tracks, on_progress=None, should_cancel=None):
     1曲の検索が終わるたびに呼ばれる(進捗表示用)。省略可。should_cancel()
     がTrueを返すようになったら、まだ処理していない曲の検索を打ち切る
     (このフェーズが全体の取得時間の大半を占めるため、ユーザーが中断した
-    場合にここで早めに切り上げないと無駄なAPI呼び出しが続いてしまう)。
-
-    tracksはこの時点で既にrank(人気度)降順にソート済みのため、何もせず
-    そのまま処理すると、rank=0のiTunes補完曲(Deezerに無かった曲。旧名義
-    時代の曲等)が常にリストの末尾に来て毎回最後に検索されることになる。
-    実運用で「rank=0の曲群だけが毎回まとまって一致しない」現象を観測して
-    おり(個別に試すと普通に見つかるため、検索自体の精度の問題ではなく、
-    1回の全曲取得あたりの総リクエスト数に何らかの上限がある可能性が高い)、
-    その場合毎回同じ曲群が損をし続けてしまう。処理順(検索を投げる順序)
-    だけをランダムにし、表示順(rank降順、tracks自体)には影響させない
-    ことで、上限に達したとしても影響を受ける曲が毎回入れ替わるようにする。"""
+    場合にここで早めに切り上げないと無駄なAPI呼び出しが続いてしまう)。"""
     total = len(tracks)
     completed = 0
     lock = threading.Lock()
-    shuffled = list(tracks)
-    random.shuffle(shuffled)
 
     def resolve(t):
         nonlocal completed
@@ -1332,38 +1252,15 @@ def _apply_ytmusic_audio_override(tracks, on_progress=None, should_cancel=None):
         return result, tier
 
     with ThreadPoolExecutor(max_workers=3) as pool:
-        results = list(pool.map(resolve, shuffled))
-    matched_tracks = []
-    for t, (matched, tier) in zip(shuffled, results):
+        results = list(pool.map(resolve, tracks))
+    for t, (matched, tier) in zip(tracks, results):
         if matched:
-            # 差し替え前のDeezer/iTunesプレビューのIDを_fallback_idとして
-            # 残しておき、この曲のytmusic側再生(iframe)が失敗した場合に
-            # その場で元のプレビューへフォールバックできるようにする
-            # (_to_quiz_track参照)。
-            t["_fallback_id"] = t["id"]
             t["id"] = f"{_YTMUSIC_ID_PREFIX}{matched}"
             # "artist"(演奏者名だけでの一致)・"english"(英題/ローマ字表記
             # フォールバック)は、Deezer/iTunesのランキングと同じシングル/
             # アルバム収録の版だと確認できていない(=別版の可能性がある)ため、
             # 確認画面でハイライトできるよう印を付けておく(_to_quiz_track参照)。
             t["_ytmusic_match_tier"] = tier
-            matched_tracks.append((t, matched))
-
-    if should_cancel and should_cancel():
-        return
-
-    # 再生はYouTube iframeプレーヤーで行う(_YTMUSIC_ID_PREFIX参照)ため、
-    # 検索で見つかった動画であっても、レーベル側が埋め込み再生を許可して
-    # いない(YouTube Music上でしか再生できない)ことがある。yt-dlpによる
-    # 直接抽出ではこの制限を受けなかったが、iframe再生に戻したことで
-    # 表面化した。ここで一括チェックし、埋め込み不可の曲は差し替え前の
-    # Deezer/iTunesプレビューへ戻す(_fallback_idはそのまま、trackId ==
-    # fallbackTrackIdになるだけなので実害は無い)。
-    embeddable = ytmusic_service.filter_embeddable([vid for _, vid in matched_tracks])
-    for t, matched in matched_tracks:
-        if matched not in embeddable:
-            t["id"] = t["_fallback_id"]
-            t["_ytmusic_match_tier"] = None
 
 
 def get_artist_tracks(artist_name, scope="all", on_progress=None, should_cancel=None):
@@ -1425,7 +1322,6 @@ def get_artist_tracks(artist_name, scope="all", on_progress=None, should_cancel=
     itunes_catalog = _fetch_itunes_catalog(
         canonical_name,
         on_progress=(lambda c, t: on_progress("itunes_catalog", c, t)) if on_progress else None,
-        extra_artist_ids=group_config.get("itunes_extra_artist_ids"),
     )
 
     existing_keys = {normalize_key(t["title_short"]) for t in picked}
