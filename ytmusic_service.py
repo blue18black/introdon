@@ -49,7 +49,11 @@ import time
 from ytmusicapi import YTMusic
 import yt_dlp
 
-_yt = YTMusic()
+# location未指定だとリクエスト元IPのジオロケーションから国を推測するため、
+# 海外データセンター(Render等)からだと日本限定配信の曲がカタログに出ず
+# 検索でヒットしなくなる。サーバーの場所に関係なく日本のカタログで検索
+# されるよう明示する。
+_yt = YTMusic(language="ja", location="JP")
 
 # Deezer/iTunes側と同様、ytmusicapiの内部リクエストも一時的なネットワーク
 # エラー/レート制限で失敗することがあるため、失敗時は間を置いて再試行する。
