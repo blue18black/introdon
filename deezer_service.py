@@ -1333,15 +1333,13 @@ def _apply_ytmusic_audio_override(tracks, on_progress=None, should_cancel=None):
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         results = list(pool.map(resolve, shuffled))
+    matched_tracks = []
     for t, (matched, tier) in zip(shuffled, results):
         if matched:
-            # YouTube側の音声ストリーム抽出(yt-dlp)は、検索で見つかった動画
-            # であっても実行環境によっては失敗することがある(YouTube側の
-            # ボット対策等、検索の成否とは別の話)。差し替え前のDeezer/iTunes
-            # プレビューのIDを_fallback_idとして残しておき、再生直前の音源
-            # 取得(get_track_audio)がytmusic側で失敗した場合にその場で
-            # 元のプレビューへフォールバックできるようにする(_to_quiz_track
-            # 参照)。
+            # 差し替え前のDeezer/iTunesプレビューのIDを_fallback_idとして
+            # 残しておき、この曲のytmusic側再生(iframe)が失敗した場合に
+            # その場で元のプレビューへフォールバックできるようにする
+            # (_to_quiz_track参照)。
             t["_fallback_id"] = t["id"]
             t["id"] = f"{_YTMUSIC_ID_PREFIX}{matched}"
             # "artist"(演奏者名だけでの一致)・"english"(英題/ローマ字表記
@@ -1349,6 +1347,23 @@ def _apply_ytmusic_audio_override(tracks, on_progress=None, should_cancel=None):
             # アルバム収録の版だと確認できていない(=別版の可能性がある)ため、
             # 確認画面でハイライトできるよう印を付けておく(_to_quiz_track参照)。
             t["_ytmusic_match_tier"] = tier
+            matched_tracks.append((t, matched))
+
+    if should_cancel and should_cancel():
+        return
+
+    # 再生はYouTube iframeプレーヤーで行う(_YTMUSIC_ID_PREFIX参照)ため、
+    # 検索で見つかった動画であっても、レーベル側が埋め込み再生を許可して
+    # いない(YouTube Music上でしか再生できない)ことがある。yt-dlpによる
+    # 直接抽出ではこの制限を受けなかったが、iframe再生に戻したことで
+    # 表面化した。ここで一括チェックし、埋め込み不可の曲は差し替え前の
+    # Deezer/iTunesプレビューへ戻す(_fallback_idはそのまま、trackId ==
+    # fallbackTrackIdになるだけなので実害は無い)。
+    embeddable = ytmusic_service.filter_embeddable([vid for _, vid in matched_tracks])
+    for t, matched in matched_tracks:
+        if matched not in embeddable:
+            t["id"] = t["_fallback_id"]
+            t["_ytmusic_match_tier"] = None
 
 
 def get_artist_tracks(artist_name, scope="all", on_progress=None, should_cancel=None):

@@ -46,7 +46,9 @@ DeezerとiTunesで同じ曲が同じように途中から始まる事例が確�
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
+import requests
 from ytmusicapi import YTMusic
 import yt_dlp
 
@@ -55,6 +57,48 @@ import yt_dlp
 # 検索でヒットしなくなる。サーバーの場所に関係なく日本のカタログで検索
 # されるよう明示する。
 _yt = YTMusic(language="ja", location="JP")
+
+_embed_session = requests.Session()
+_embed_session.headers.update({"User-Agent": "Mozilla/5.0"})
+
+
+def is_embeddable(video_id):
+    """YouTubeのoEmbedエンドポイントで、動画が埋め込み再生(YouTube iframe
+    プレーヤー)できるかを事前確認する。アップロード側が埋め込みを許可して
+    いない動画は401、削除/非公開になった動画は404を返す。YouTube Music上の
+    ATV(音声のみ版、レーベルが自動生成した"topic"扱いの動画)は、レーベルが
+    埋め込みを許可していないことが珍しくなく、これがイントロクイズ側の
+    iframe再生で「曲が流れない」の主要因になっていた(yt-dlpによる直接抽出
+    ではこの制限を受けなかったため、iframe再生方式に戻した際に表面化した)。
+    ここで弾いておくことで、出題時にその問題に当たる頻度そのものを減らす。
+
+    401/404以外の失敗(タイムアウト等)は、曲数の多いアーティストを一気に
+    並列チェックした時にYouTube側から一時的にレート制限され、本来「再生
+    不可」なはずの曲まで巻き添えで「再生不可」扱いになってしまうことが
+    あった。間を置いて1回だけ再試行し、それでも判定できない場合は誤って
+    曲を減らさないよう埋め込み可能とみなす(それでも本当に再生できない曲は、
+    クイズ側の差し替えロジック・fallback_idによる代替再生が最終的な保険に
+    なる)。"""
+    url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+    for attempt in range(2):
+        try:
+            res = _embed_session.get(url, timeout=4)
+            if res.status_code in (401, 404):
+                return False
+            return True
+        except Exception:
+            if attempt == 0:
+                time.sleep(0.5)
+    return True
+
+
+def filter_embeddable(video_ids):
+    """video_idsのうち埋め込み再生できるものだけの集合を返す。"""
+    if not video_ids:
+        return set()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(is_embeddable, video_ids))
+    return {vid for vid, ok in zip(video_ids, results) if ok}
 
 # Deezer/iTunes側と同様、ytmusicapiの内部リクエストも一時的なネットワーク
 # エラー/レート制限で失敗することがあるため、失敗時は間を置いて再試行する。
