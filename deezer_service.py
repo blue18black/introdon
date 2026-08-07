@@ -10,6 +10,7 @@
 本体と版表記(Live/Remix等)が"title"/"title_version"として別フィールドで
 分離されているため、ライブ/インスト等の版違いも文字列パースに頼らず確実に検出できる。
 """
+import random
 import re
 import sys
 import threading
@@ -1265,10 +1266,22 @@ def _apply_ytmusic_audio_override(tracks, on_progress=None, should_cancel=None):
     1曲の検索が終わるたびに呼ばれる(進捗表示用)。省略可。should_cancel()
     がTrueを返すようになったら、まだ処理していない曲の検索を打ち切る
     (このフェーズが全体の取得時間の大半を占めるため、ユーザーが中断した
-    場合にここで早めに切り上げないと無駄なAPI呼び出しが続いてしまう)。"""
+    場合にここで早めに切り上げないと無駄なAPI呼び出しが続いてしまう)。
+
+    tracksはこの時点で既にrank(人気度)降順にソート済みのため、何もせず
+    そのまま処理すると、rank=0のiTunes補完曲(Deezerに無かった曲。旧名義
+    時代の曲等)が常にリストの末尾に来て毎回最後に検索されることになる。
+    実運用で「rank=0の曲群だけが毎回まとまって一致しない」現象を観測して
+    おり(個別に試すと普通に見つかるため、検索自体の精度の問題ではなく、
+    1回の全曲取得あたりの総リクエスト数に何らかの上限がある可能性が高い)、
+    その場合毎回同じ曲群が損をし続けてしまう。処理順(検索を投げる順序)
+    だけをランダムにし、表示順(rank降順、tracks自体)には影響させない
+    ことで、上限に達したとしても影響を受ける曲が毎回入れ替わるようにする。"""
     total = len(tracks)
     completed = 0
     lock = threading.Lock()
+    shuffled = list(tracks)
+    random.shuffle(shuffled)
 
     def resolve(t):
         nonlocal completed
@@ -1293,8 +1306,8 @@ def _apply_ytmusic_audio_override(tracks, on_progress=None, should_cancel=None):
         return result, tier
 
     with ThreadPoolExecutor(max_workers=3) as pool:
-        results = list(pool.map(resolve, tracks))
-    for t, (matched, tier) in zip(tracks, results):
+        results = list(pool.map(resolve, shuffled))
+    for t, (matched, tier) in zip(shuffled, results):
         if matched:
             t["id"] = f"{_YTMUSIC_ID_PREFIX}{matched}"
             # "artist"(演奏者名だけでの一致)・"english"(英題/ローマ字表記
