@@ -571,6 +571,12 @@ _ARTIST_MERGE_GROUPS = [
             229486035, 238203301, 11300134,
             334225451, 293591331, 339946441, 361398382, 323086021, 295264651,
         ],
+        # iTunes側の自動解決(find_artist_id)は「超ときめき♡宣伝部」で検索
+        # して見つかる1アーティストページ(新名義)しか見ない。旧名義
+        # 「ときめき宣伝部」時代の曲(Deezer側のfetch_ids 238203301/11300134
+        # に相当)はiTunes上では別アーティストID(1166362525)に分裂登録されて
+        # いるため、ここに追加して_fetch_itunes_catalogで束ねて取得する。
+        "itunes_extra_artist_ids": [1166362525],
         # メンバー別ユニット曲が"曲名／メンバー名"の形式でタイトルに直接
         # クレジットされている(コンサート音源は"曲名／メンバー名(Concert
         # ...)"の形式)。私立恵比寿中学のユニットアルバムと似ているが、
@@ -884,19 +890,33 @@ def _itunes_track_to_raw_shape(t):
     }
 
 
-def _fetch_itunes_catalog(canonical_name, on_progress=None):
+def _fetch_itunes_catalog(canonical_name, on_progress=None, extra_artist_ids=None):
     """アーティストのiTunes上の全曲を、Deezer側と同じ形に整形・フィルタ・
     重複排除した状態で返す。(1)Deezerに無い曲の補完、(2)Deezer由来の曲の
     再生音源をiTunes側に差し替える、の両方の元データとして使う。iTunes
     側の検索・取得に失敗しても(レート制限、ネットワークエラー等)Deezerの
-    結果には一切影響させず、空リストを返す。"""
+    結果には一切影響させず、空リストを返す。
+
+    extra_artist_idsは、canonical_name検索では見つからない別アーティスト
+    ページ(改名前の旧名義等、_ARTIST_MERGE_GROUPSのitunes_extra_artist_ids
+    参照)のIDを追加で束ねて取得したい場合に指定する。"""
+    artist_ids = []
     try:
         itunes_artist_id = itunes_service.find_artist_id(canonical_name)
-        if itunes_artist_id is None:
-            return []
-        raw = itunes_service.fetch_all_tracks_raw(itunes_artist_id, on_progress=on_progress)
+        if itunes_artist_id is not None:
+            artist_ids.append(itunes_artist_id)
     except Exception:
+        pass
+    artist_ids.extend(extra_artist_ids or [])
+    if not artist_ids:
         return []
+
+    raw = []
+    for artist_id in artist_ids:
+        try:
+            raw.extend(itunes_service.fetch_all_tracks_raw(artist_id, on_progress=on_progress))
+        except Exception:
+            continue
 
     adapted = [_itunes_track_to_raw_shape(t) for t in raw]
     _clean_titles_in_place(adapted)
@@ -1330,6 +1350,7 @@ def get_artist_tracks(artist_name, scope="all", on_progress=None, should_cancel=
     itunes_catalog = _fetch_itunes_catalog(
         canonical_name,
         on_progress=(lambda c, t: on_progress("itunes_catalog", c, t)) if on_progress else None,
+        extra_artist_ids=group_config.get("itunes_extra_artist_ids"),
     )
 
     existing_keys = {normalize_key(t["title_short"]) for t in picked}
