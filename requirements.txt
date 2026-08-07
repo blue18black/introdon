@@ -1,3 +1,5 @@
 flask
-ytmusicapi
+requests
 gunicorn
+ytmusicapi
+yt-dlp

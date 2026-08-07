@@ -3,27 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>イントロドン</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎵</text></svg>">
+<title>イントロドン v2</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='90'%3E%F0%9F%8E%B5%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&display=swap" rel="stylesheet">
-<!-- 動画の読み込み開始が遅い曲があるのを少しでも早めるため、YouTube側への
+<!-- 曲のプレビュー音源の読み込み開始を少しでも早めるため、Deezer側への
      接続(DNS/TLS)をページ読み込み時点で先に済ませておく。 -->
-<link rel="preconnect" href="https://www.youtube.com">
-<link rel="preconnect" href="https://i.ytimg.com">
-<link rel="preconnect" href="https://www.google.com">
+<link rel="preconnect" href="https://api.deezer.com">
+<link rel="preconnect" href="https://cdnt-preview.dzcdn.net">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
-<div id="yt-players" class="yt-players"></div>
+<div id="audio-players" class="audio-players"></div>
 
 <div id="app">
 
   <!-- ホーム画面(イントロドンの設定を兼ねる) -->
   <section id="screen-home" class="screen screen-scroll is-active">
     <header class="home-header">
-      <h1 class="logo">イントロ<span class="logo-accent">ドン</span></h1>
+      <h1 class="logo">イントロ<span class="logo-accent">ドン</span><span class="logo-version"><span class="logo-version-text">v2</span></span></h1>
       <p class="tagline">イントロを聞いて曲を当てよう</p>
     </header>
 
@@ -133,7 +132,7 @@
 </div>
 
 <script src="/static/api.js"></script>
-<script src="/static/youtube-player.js"></script>
+<script src="/static/audio-player.js"></script>
 <script src="/static/quiz.js"></script>
 <script src="/static/app.js"></script>
 </body>
