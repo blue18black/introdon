@@ -43,6 +43,7 @@ DeezerとiTunesで同じ曲が同じように途中から始まる事例が確�
 内部仕様変更でyt-dlpが追従できず突然動かなくなることがある(Deezer/iTunes
 の公開APIより壊れやすい)。
 """
+import sys
 import threading
 import time
 
@@ -77,37 +78,54 @@ def _throttle():
         _last_request_at = time.monotonic()
 
 
-def _retry(fn, retries=4, delay=1.0, default=None):
+def _retry(fn, retries=4, delay=1.0, default=None, label=None):
     """delayは初回リトライ時の待ち時間。レート制限の解除にかかる時間は
     環境(サーバーの回線・IP)によって差があり、固定の短い待ち時間だけでは
     足りずに結局諦めてしまうことがあったため、iTunes側(itunes_service._get)
-    と同様にリトライのたびに待ち時間を伸ばす(指数バックオフ)。"""
+    と同様にリトライのたびに待ち時間を伸ばす(指数バックオフ)。
+
+    従来は例外を握りつぶすだけでログに何も残らず、「検索したが見つから
+    なかった(結果0件)」のか「リクエスト自体が失敗し続けている(ネット
+    ワークエラー・レート制限・ブロック等)」のかを実行環境(特にログしか
+    確認できないRender上)で区別できなかった。全リトライを使い切って
+    諦める時だけ、最後の例外の内容を標準エラー出力に残す(1曲ごとに毎回
+    出すと大量になるため、最終的に諦めた時だけに絞る)。"""
+    last_exc = None
     for attempt in range(retries + 1):
         _throttle()
         try:
             return fn()
-        except Exception:
+        except Exception as e:
+            last_exc = e
             if attempt < retries:
                 time.sleep(delay * (2 ** attempt))
+    if last_exc is not None:
+        print(f"[ytmusic_service] {label or fn}: retries exhausted: {last_exc!r}", file=sys.stderr)
     return default
 
 
 def search_songs(query, limit=8):
     """曲名等でYouTube Musicの"songs"(動画扱いのMVを除いた音声トラック)を
     検索する。失敗時は空リスト。"""
-    return _retry(lambda: _yt.search(query, filter="songs", limit=limit), default=[]) or []
+    return _retry(
+        lambda: _yt.search(query, filter="songs", limit=limit),
+        default=[], label=f"search_songs({query!r})",
+    ) or []
 
 
 def search_albums(query, limit=3):
     """アーティスト名+アルバム名でYouTube Musicのアルバム(シングル/EP含む)
     を検索する。曲名検索で見つからない曲の最終手段(対象アルバムのトラック
     リストを直接見に行く)用。失敗時は空リスト。"""
-    return _retry(lambda: _yt.search(query, filter="albums", limit=limit), default=[]) or []
+    return _retry(
+        lambda: _yt.search(query, filter="albums", limit=limit),
+        default=[], label=f"search_albums({query!r})",
+    ) or []
 
 
 def get_album_tracks(browse_id):
     """アルバムのbrowseIdからトラックリストを取得する。失敗時は空リスト。"""
-    album = _retry(lambda: _yt.get_album(browse_id))
+    album = _retry(lambda: _yt.get_album(browse_id), label=f"get_album({browse_id!r})")
     return (album or {}).get("tracks") or []
 
 
