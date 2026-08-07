@@ -499,6 +499,12 @@ def _to_quiz_track(raw, artist_name, album_title=None, album_cover=None):
         # (_apply_ytmusic_audio_override参照)。ytmusic:以外(iTunes/Deezerの
         # ままの曲)ではNone。
         "ytmusicMatchTier": raw.get("_ytmusic_match_tier"),
+        # 差し替え前の元の音源ID(Deezer/iTunes)。再生直前の音源取得
+        # (/api/track_audio)がこの曲のidで失敗した場合、フロントエンドが
+        # 曲を丸ごと差し替える前にまずこちらへフォールバックする
+        # (_apply_ytmusic_audio_override参照)。差し替えが起きていない曲では
+        # None。
+        "fallbackTrackId": str(raw["_fallback_id"]) if raw.get("_fallback_id") is not None else None,
     }
 
 
@@ -1329,6 +1335,14 @@ def _apply_ytmusic_audio_override(tracks, on_progress=None, should_cancel=None):
         results = list(pool.map(resolve, shuffled))
     for t, (matched, tier) in zip(shuffled, results):
         if matched:
+            # YouTube側の音声ストリーム抽出(yt-dlp)は、検索で見つかった動画
+            # であっても実行環境によっては失敗することがある(YouTube側の
+            # ボット対策等、検索の成否とは別の話)。差し替え前のDeezer/iTunes
+            # プレビューのIDを_fallback_idとして残しておき、再生直前の音源
+            # 取得(get_track_audio)がytmusic側で失敗した場合にその場で
+            # 元のプレビューへフォールバックできるようにする(_to_quiz_track
+            # 参照)。
+            t["_fallback_id"] = t["id"]
             t["id"] = f"{_YTMUSIC_ID_PREFIX}{matched}"
             # "artist"(演奏者名だけでの一致)・"english"(英題/ローマ字表記
             # フォールバック)は、Deezer/iTunesのランキングと同じシングル/

@@ -44,7 +44,7 @@ def index():
     # (ローカルの個人利用規模なので毎回読み直すコストは無視できる)。
     with open("index.html", encoding="utf-8") as f:
         html = f.read()
-    for asset in ("style.css", "api.js", "audio-player.js", "quiz.js", "app.js"):
+    for asset in ("style.css", "api.js", "audio-player.js", "youtube-player.js", "quiz.js", "app.js"):
         html = html.replace(f'/static/{asset}"', f'/static/{asset}?v={_asset_version(asset)}"')
     return html
 

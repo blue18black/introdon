@@ -11,11 +11,17 @@
      接続(DNS/TLS)をページ読み込み時点で先に済ませておく。 -->
 <link rel="preconnect" href="https://api.deezer.com">
 <link rel="preconnect" href="https://cdnt-preview.dzcdn.net">
+<!-- YouTube Music音源(ytmusic:曲)はiframe再生のため、YouTube側への接続も
+     同様に先に済ませておく。 -->
+<link rel="preconnect" href="https://www.youtube.com">
+<link rel="preconnect" href="https://i.ytimg.com">
+<link rel="preconnect" href="https://www.google.com">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
 <div id="audio-players" class="audio-players"></div>
+<div id="yt-players" class="yt-players"></div>
 
 <div id="app">
 
@@ -133,6 +139,7 @@
 
 <script src="/static/api.js"></script>
 <script src="/static/audio-player.js"></script>
+<script src="/static/youtube-player.js"></script>
 <script src="/static/quiz.js"></script>
 <script src="/static/app.js"></script>
 </body>
