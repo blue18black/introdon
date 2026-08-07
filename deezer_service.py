@@ -509,6 +509,21 @@ def _search_artists(query, limit=10):
     return (data or {}).get("data", [])
 
 
+# 完全一致が無い場合に「アルバム数が最大の候補」を採用する仕組み
+# (find_target_artist参照、米津玄師/Kenshi Yonezuのようなローマ字表記
+# 分裂に対応するためのもの)が、たまたま名前が似ているだけの無関係な
+# 別アーティストを誤って採用してしまうことがある(実例:「Mr.Children」で
+# 検索すると本物の"Mr. Children"はDeezer上でアルバム数0件のスタブのみ
+# (=Deezerにカタログ自体が無い)で、無関係な海外バンド"MyChildren
+# MyBride"(artist_id=241603)がアルバム数最大として選ばれてしまって
+# いた)。文字列の類似度だけでは「表記違いの同一人物」と「たまたま似て
+# いるだけの別人」を機械的に区別できないため、個別に確認済みの誤マッチ
+# のDeezer artist_idをここに登録し、候補から除外する。
+_ARTIST_ID_BLOCKLIST = {
+    241603,  # MyChildren MyBride(「Mr.Children」で誤って採用されていた無関係な海外バンド)
+}
+
+
 def find_target_artist(artist_name):
     """アーティスト名からDeezerのartist_idを解決する。同名の空スタブ
     チャンネル(アルバム0件のダミー的な重複エントリ)と本物を区別するため、
@@ -521,8 +536,13 @@ def find_target_artist(artist_name):
     方を選んでしまう(例:「米津玄師」で検索すると、本体は"Kenshi Yonezu"
     (41アルバム)として登録されており、"米津玄師"という完全一致エントリは
     0アルバムのスタブ)。そのため、完全一致であってもアルバム数が0の候補は
-    信用せず、その場合はアルバム数が最大の候補を採用する。"""
+    信用せず、その場合はアルバム数が最大の候補を採用する。ただし
+    _ARTIST_ID_BLOCKLISTに登録された既知の誤マッチ候補は除外する
+    (「Deezerにこのアーティストのカタログが無い」場合の代替候補として、
+    無関係な別アーティストが採用されてしまうケースへの対処。詳細は
+    _ARTIST_ID_BLOCKLIST参照)。"""
     results = _search_artists(artist_name, limit=10)
+    results = [r for r in results if r.get("id") not in _ARTIST_ID_BLOCKLIST]
     if not results:
         return None
     query_norm = artist_name.strip().lower()
