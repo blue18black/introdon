@@ -28,6 +28,7 @@ iTunesの/lookupはentity=songで直接アーティストの曲一覧を取れ�
 Deezerと同じく「アーティスト→アルバム一覧→アルバムごとの曲一覧」の
 形で辿ることでこの上限を回避する。
 """
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -185,6 +186,22 @@ def _fetch_artist_albums(artist_id):
     return [r for r in results if r.get("wrapperType") == "collection"]
 
 
+_COLLECTION_TYPE_SUFFIX_RE = re.compile(r"\s*-\s*(EP|Single|Album)\s*$", re.IGNORECASE)
+
+
+def _strip_collection_type_suffix(collection_name):
+    """iTunesのcollectionNameには"どどどどどりーまー - EP"のように末尾へ
+    盤種別(EP/Single/Album)が付与されている。Deezer側の同じ曲のalbum.title
+    にはこの付与が無く("どどどどどりーまー")、_album_titleはYouTube Music
+    検索のクエリ補助語としてそのまま使われる(deezer_service._query_
+    suffixes_for参照)ため、Deezer由来かiTunes由来かで検索クエリの
+    ノイズが変わってしまう。検索精度をDeezer由来の曲と揃えるため、この
+    付与を取り除く。"""
+    if not collection_name:
+        return collection_name
+    return _COLLECTION_TYPE_SUFFIX_RE.sub("", collection_name).strip()
+
+
 def _fetch_album_tracks(album):
     data = _get(
         _LOOKUP_API_BASE,
@@ -193,7 +210,7 @@ def _fetch_album_tracks(album):
     results = (data or {}).get("results", [])
     tracks = [r for r in results if r.get("wrapperType") == "track"]
     for t in tracks:
-        t["_album_title"] = album.get("collectionName")
+        t["_album_title"] = _strip_collection_type_suffix(album.get("collectionName"))
         t["_album_cover"] = album.get("artworkUrl100")
     return tracks
 

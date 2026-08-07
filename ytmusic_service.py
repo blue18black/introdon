@@ -104,9 +104,15 @@ def _retry(fn, retries=4, delay=1.0, default=None, label=None):
     return default
 
 
-def search_songs(query, limit=8):
+def search_songs(query, limit=20):
     """曲名等でYouTube Musicの"songs"(動画扱いのMVを除いた音声トラック)を
-    検索する。失敗時は空リスト。"""
+    検索する。失敗時は空リスト。
+
+    limitはデフォルト8だったが、呼び出し側(deezer_service._search_
+    ytmusic_audio)は曲名が一致する最初のATV(音声のみ版)候補を採用する
+    ため、目的の候補が検索結果の上位8件より下に埋もれていると見つからない
+    (マイナー・旧名義曲ほど起きやすい)。1回のリクエストで返る件数を
+    増やすだけで追加のAPI呼び出しコストは無いため、広げておく。"""
     return _retry(
         lambda: _yt.search(query, filter="songs", limit=limit),
         default=[], label=f"search_songs({query!r})",
